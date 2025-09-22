@@ -1492,175 +1492,66 @@ end)
 plr.CharacterAdded:Connect(function() task.defer(function() ensureChar(); if not mv_on.Value then mv_killBV() end end) end)
 mv_on:OnChanged(function(v) if not v then mv_killBV() end end)
 
--- ===== Strong NoClip Tab (safe) v1.3 =====
+-- ===== Simple NoClip (tab) — minimal & robust =====
 do
-    local ok, err = pcall(function()
-        local Players = game:GetService("Players")
-        local RunService = game:GetService("RunService")
-        local UIS = game:GetService("UserInputService")
-        local PhysicsService = game:GetService("PhysicsService")
-        local lp = Players.LocalPlayer
-        local cam = workspace.CurrentCamera
+    local P  = game:GetService("Players")
+    local R  = game:GetService("RunService")
+    local U  = game:GetService("UserInputService")
+    local PS = game:GetService("PhysicsService")
+    local me = P.LocalPlayer
 
-        -- взять уже созданный Fluent Window, иначе поднять мини-окно
-        local Library = rawget(_G, "__FUGER_LIB")
-        local Window  = rawget(_G, "__FUGER_WIN")
-        if not (Library and Window and Window.AddTab) then
-            local function HttpGet(u) return game:HttpGet(u, true) end
-            local libOK, lib = pcall(function()
-                return loadstring(HttpGet("https://github.com/1dontgiveaf/Fluent-Renewed/releases/download/v1.0/Fluent.luau"))()
-            end)
-            if not libOK then return end
-            Library = lib
-            Window = Library:CreateWindow{
-                Title = "Fuger Tools",
-                SubTitle = "NoClip addon",
-                Size = UDim2.fromOffset(480, 320),
-                Theme = "Dark",
-                MinimizeKey = Enum.KeyCode.LeftControl
-            }
-            rawset(_G, "__FUGER_LIB", Library)
-            rawset(_G, "__FUGER_WIN", Window)
+    -- bind character
+    local ch, hum, root
+    local function bind()
+        ch   = me.Character or me.CharacterAdded:Wait()
+        hum  = ch:WaitForChild("Humanoid")
+        root = ch:WaitForChild("HumanoidRootPart")
+    end
+    bind()
+    me.CharacterAdded:Connect(function() task.defer(bind) end)
+
+    -- collision group that never collides
+    local G = "FUGER_NC"
+    pcall(function()
+        local exists = false
+        for _,g in ipairs(PS:GetCollisionGroups()) do if g.name==G then exists=true break end end
+        if not exists then PS:CreateCollisionGroup(G) end
+        for _,g in ipairs(PS:GetCollisionGroups()) do
+            PS:CollisionGroupSetCollidable(G, g.name, false)
+            PS:CollisionGroupSetCollidable(g.name, G, false)
         end
-
-        -- персонаж
-        local char, hum, root
-        local function bindChar()
-            char = lp.Character or lp.CharacterAdded:Wait()
-            hum  = char:WaitForChild("Humanoid")
-            root = char:WaitForChild("HumanoidRootPart")
-        end
-        bindChar()
-        lp.CharacterAdded:Connect(function() task.defer(bindChar) end)
-
-        -- создать/настроить группу без коллизий
-        local GROUP = "FUGER_NC"
-        local function setupGroup()
-            pcall(function()
-                local groups = PhysicsService:GetCollisionGroups()
-                local exists = false
-                for _,g in ipairs(groups) do if g.name == GROUP then exists = true break end end
-                if not exists then PhysicsService:CreateCollisionGroup(GROUP) end
-                -- отключить столкновения нашей группы со всеми известными
-                groups = PhysicsService:GetCollisionGroups()
-                for _,g in ipairs(groups) do
-                    PhysicsService:CollisionGroupSetCollidable(GROUP, g.name, false)
-                    PhysicsService:CollisionGroupSetCollidable(g.name, GROUP, false)
-                end
-            end)
-        end
-        setupGroup()
-
-        -- UI
-        local Tab = Window:AddTab({ Title = "NoClip", Icon = "ghost" })
-        local t_enable = Tab:CreateToggle("nc_on", { Title="Enable NoClip (toggle)", Default=false })
-        local t_hold   = Tab:CreateToggle("nc_hold", { Title="Hold LeftShift (priority)", Default=false })
-        local t_ghost  = Tab:CreateToggle("nc_ghost", { Title="Ghost move (WASD + Q/E)", Default=true })
-        local s_spd    = Tab:CreateSlider("nc_spd", { Title="Speed", Min=6, Max=80, Default=28 })
-        local s_vspd   = Tab:CreateSlider("nc_vspd", { Title="Vertical speed", Min=4, Max=50, Default=22 })
-        local t_norot  = Tab:CreateToggle("nc_norot", { Title="Freeze Humanoid AutoRotate", Default=true })
-
-        Tab:AddParagraph({Title="Hint", Content="Toggle = обычный NoClip. Hold = зажми LeftShift. Ghost — свободный полёт."})
-
-        -- применить группу и убрать коллизии у всех частей
-        local function applyNoCollision()
-            if not char then return end
-            for _,p in ipairs(char:GetDescendants()) do
-                if p:IsA("BasePart") then
-                    p.CanCollide = false
-                    p.CanTouch   = false
-                    pcall(function() PhysicsService:SetPartCollisionGroup(p, GROUP) end)
-                end
-            end
-            if hum then
-                pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end)
-                hum.AutoRotate = not t_norot.Value
-            end
-        end
-
-        local function clearGroup()
-            if not char then return end
-            for _,p in ipairs(char:GetDescendants()) do
-                if p:IsA("BasePart") then
-                    -- вернуть в Default, но не включать столкновения насильно
-                    pcall(function() PhysicsService:SetPartCollisionGroup(p, "Default") end)
-                end
-            end
-            if hum then hum.AutoRotate = true end
-        end
-
-        -- основной цикл noclip
-        local stepConn
-        local function runNoClip(on)
-            if on then
-                if stepConn then stepConn:Disconnect() end
-                stepConn = RunService.Stepped:Connect(applyNoCollision)
-            else
-                if stepConn then stepConn:Disconnect() stepConn=nil end
-                clearGroup()
-            end
-        end
-
-        -- Ghost (BodyVelocity)
-        local function getBV() return root and root:FindFirstChild("_NC_BV") end
-        local function killBV() local b=getBV() if b then b:Destroy() end end
-        local function ensureBV()
-            if not root then return end
-            local b=getBV()
-            if not b then
-                b=Instance.new("BodyVelocity")
-                b.Name="_NC_BV"
-                b.MaxForce=Vector3.new(1e9,1e9,1e9)
-                b.Velocity=Vector3.new()
-                b.Parent=root
-            end
-            return b
-        end
-        RunService.Heartbeat:Connect(function()
-            if not (t_ghost.Value and root) then killBV() return end
-            local b=ensureBV(); if not b then return end
-            local v=Vector3.zero
-            local cf=(cam and cam.CFrame) or root.CFrame
-            local f=Vector3.new(cf.LookVector.X,0,cf.LookVector.Z).Unit
-            local r=Vector3.new(cf.RightVector.X,0,cf.RightVector.Z).Unit
-            local sp=s_spd.Value
-            if UIS:IsKeyDown(Enum.KeyCode.W) then v=v+f*sp end
-            if UIS:IsKeyDown(Enum.KeyCode.S) then v=v-f*sp end
-            if UIS:IsKeyDown(Enum.KeyCode.D) then v=v+r*sp end
-            if UIS:IsKeyDown(Enum.KeyCode.A) then v=v-r*sp end
-            local vs=s_vspd.Value
-            if UIS:IsKeyDown(Enum.KeyCode.E) then v=v+Vector3.new(0,vs,0) end
-            if UIS:IsKeyDown(Enum.KeyCode.Q) then v=v-Vector3.new(0,vs,0) end
-            b.Velocity=v
-        end)
-
-        -- мастер-логика
-        local function wantOn()
-            if t_hold.Value then return UIS:IsKeyDown(Enum.KeyCode.LeftShift) end
-            return t_enable.Value
-        end
-        local function recompute()
-            setupGroup()
-            runNoClip(wantOn())
-            if not t_ghost.Value then killBV() end
-        end
-        t_enable:OnChanged(recompute)
-        t_hold:OnChanged(recompute)
-        t_norot:OnChanged(function(v) if hum then hum.AutoRotate = not v end end)
-        t_ghost:OnChanged(function(v) if not v then killBV() end end)
-
-        -- на всякий — горячая клавиша N для быстрого тумблера
-        UIS.InputBegan:Connect(function(i,gp)
-            if gp then return end
-            if i.KeyCode == Enum.KeyCode.N then
-                t_enable:SetValue(not t_enable.Value)
-                recompute()
-            end
-        end)
     end)
-    if not ok then warn("[Strong NoClip] "..tostring(err)) end
+
+    -- UI (используем уже существующее окно)
+    local Tab = Window:AddTab({ Title = "NoClip", Icon = "ghost" })
+    local t_on   = Tab:CreateToggle("nc_on",   { Title = "Enable",           Default = false })
+    local t_hold = Tab:CreateToggle("nc_hold", { Title = "Hold LeftShift",   Default = true  })
+    Tab:AddParagraph({ Title="Hint", Content="Включи Enable или просто зажимай LeftShift, если включён Hold." })
+
+    local function applyNoCollision()
+        if not ch then return end
+        for _,p in ipairs(ch:GetDescendants()) do
+            if p:IsA("BasePart") then
+                p.CanCollide = false
+                p.CanTouch   = false
+                pcall(function() PS:SetPartCollisionGroup(p, G) end)
+            end
+        end
+        if hum then pcall(function() hum:ChangeState(Enum.HumanoidStateType.Physics) end) end
+    end
+
+    -- main loop
+    local function wantOn()
+        return (t_hold.Value and U:IsKeyDown(Enum.KeyCode.LeftShift)) or t_on.Value
+    end
+    R.Stepped:Connect(function()
+        if wantOn() then
+            applyNoCollision()
+        end
+        -- нарочно НЕ включаем коллизии обратно, чтобы игра не «врубала» стену обратно
+    end)
 end
--- ===== /Strong NoClip =====
+-- ===== /Simple NoClip =====
 
 
 -- ========= [ Finish / Autoload ] =========
