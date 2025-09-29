@@ -1399,6 +1399,8 @@ task.spawn(function()
     end
 end)
 
+
+
 -- ========= [ Finish / Autoload ] =========
 Window:SelectTab(1)
 Library:Notify{ Title="Fuger Hub", Content="Loaded: Configs + Survival + Gold + Route + Farming + Heal + Combat", Duration=6 }
