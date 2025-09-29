@@ -928,6 +928,39 @@ task.spawn(function()
     end
 end)
 
+-- ========= [ TAB: Visuals (Full Bright) ] =========
+local L = game:GetService("Lighting")
+local VisualsTab = Window:AddTab({ Title="Visuals", Icon="sun" })
+local fb_toggle   = VisualsTab:CreateToggle("fullbright_on",   { Title="Full Bright (всегда светло)", Default=false })
+local fb_keepday  = VisualsTab:CreateToggle("fullbright_day",  { Title="Делать всегда день (ClockTime=12)", Default=true })
+local fb_nofog    = VisualsTab:CreateToggle("fullbright_nofog",{ Title="Отключить туман/атмосферу", Default=true })
+local fb_shadows  = VisualsTab:CreateToggle("fullbright_shad", { Title="Отключить тени (GlobalShadows=false)", Default=true })
+local fb_bright   = VisualsTab:CreateSlider("fullbright_bri",  { Title="Lighting.Brightness", Min=1, Max=6, Rounding=1, Default=3 })
+local fb_exposure = VisualsTab:CreateSlider("fullbright_exp",  { Title="ExposureCompensation", Min=-1, Max=2, Rounding=2, Default=0.2 })
+local FB = { on=false, conn=nil, orig={
+    Brightness=L.Brightness, ClockTime=L.ClockTime, FogEnd=L.FogEnd, Ambient=L.Ambient, GlobalShadows=L.GlobalShadows, ExposureCompensation=L.ExposureCompensation
+}}
+local function ensureCC() local cc = L:FindFirstChild("_FB_CC"); if not cc then cc = Instance.new("ColorCorrectionEffect"); cc.Name="_FB_CC"; cc.Enabled=true; cc.Parent=L end; return cc end
+local LIGHT_AMBIENT = Color3.fromRGB(180, 180, 180)
+local function killFogAndAtmo() L.FogEnd = 1e9; local atmo = L:FindFirstChildOfClass("Atmosphere"); if atmo then atmo.Density=0; atmo.Offset=0; atmo.Haze=0; atmo.Glare=0 end end
+local function applyFullBrightOnce()
+    L.Brightness = fb_bright.Value; L.Ambient = LIGHT_AMBIENT; L.ExposureCompensation = fb_exposure.Value
+    if fb_keepday.Value then L.ClockTime = 12 end
+    if fb_shadows.Value then L.GlobalShadows = false end
+    if fb_nofog.Value then killFogAndAtmo() end
+    local cc = ensureCC(); cc.Brightness=0.05; cc.Contrast=0.02; cc.Saturation=0
+end
+local function restoreLighting() for k,v in pairs(FB.orig) do pcall(function() L[k] = v end) end; local cc=L:FindFirstChild("_FB_CC"); if cc then cc:Destroy() end end
+local function startFBLoop() if FB.conn then FB.conn:Disconnect() FB.conn=nil end; FB.conn = RunService.Heartbeat:Connect(function() if fb_toggle.Value then applyFullBrightOnce() end end) end
+VisualsTab:CreateButton({ Title="Reset Lighting (restore defaults)", Callback=function() fb_toggle:SetValue(false); restoreLighting() end })
+fb_toggle:OnChanged(function(v)
+    if v then FB.orig.Brightness=L.Brightness; FB.orig.ClockTime=L.ClockTime; FB.orig.FogEnd=L.FogEnd; FB.orig.Ambient=L.Ambient; FB.orig.GlobalShadows=L.GlobalShadows; FB.orig.ExposureCompensation=L.ExposureCompensation; applyFullBrightOnce()
+    else restoreLighting() end
+end)
+local function liveUpdate() if fb_toggle.Value then applyFullBrightOnce() end end
+fb_bright:OnChanged(liveUpdate); fb_exposure:OnChanged(liveUpdate); fb_keepday:OnChanged(liveUpdate); fb_nofog:OnChanged(liveUpdate); fb_shadows:OnChanged(liveUpdate)
+startFBLoop()
+plr.CharacterAdded:Connect(function() task.defer(function() if fb_toggle.Value then applyFullBrightOnce() end end) end)
 
 -- ========= [ TAB: Movement (Slope / Auto Climb + 360°) ] =========
 local UIS2 = game:GetService("UserInputService")
@@ -1107,6 +1140,81 @@ end)
 mv_on:OnChanged(function(v) if not v then mv_killBV() end end)
 
 
+-- =========================
+-- TAB: Follow (следовать за игроком)
+-- =========================
+Tabs.Follow = Window:AddTab({ Title = "Follow", Icon = "user" })
+local flw_toggle = Tabs.Follow:CreateToggle("flw_on", { Title="Follow selected player", Default=false })
+local flw_dist   = Tabs.Follow:CreateSlider("flw_dist", { Title="Keep distance (studs)", Min=2, Max=50, Rounding=1, Default=8 })
+local flw_speed  = Tabs.Follow:CreateSlider("flw_speed",{ Title="Speed (BV)", Min=5, Max=60, Rounding=1, Default=21 })
+
+local function getAllPlayerNames()
+    local list = {} for _, p in ipairs(Players:GetPlayers()) do if p ~= plr then table.insert(list, p.Name) end end
+    table.sort(list); return list
+end
+local flw_dd = Tabs.Follow:CreateDropdown("flw_target", { Title="Target player", Values=getAllPlayerNames(), Default="" })
+Tabs.Follow:CreateButton({ Title="Refresh list", Callback=function()
+    local names = getAllPlayerNames(); pcall(function() if flw_dd.SetValues then flw_dd:SetValues(names) end end)
+    local cur = (flw_dd and flw_dd.Value) or ""; if #names>0 and (cur=="" or cur==nil) then pcall(function() if flw_dd.SetValue then flw_dd:SetValue(names[1]) end end) end
+end })
+Players.PlayerAdded:Connect(function() pcall(function() if flw_dd.SetValues then flw_dd:SetValues(getAllPlayerNames()) end end) end)
+Players.PlayerRemoving:Connect(function(leaver)
+    pcall(function() if flw_dd.SetValues then flw_dd:SetValues(getAllPlayerNames()) end end)
+    if (flw_dd and flw_dd.Value) == leaver.Name then flw_toggle:SetValue(false) end
+end)
+
+local function FLW_getBV() return root and root:FindFirstChild("_FLW_BV") or nil end
+local function FLW_ensureBV()
+    if not root then return nil end
+    local bv = FLW_getBV()
+    if not bv then
+        bv = Instance.new("BodyVelocity"); bv.Name="_FLW_BV"
+        bv.MaxForce = Vector3.new(1e9, 0, 1e9) -- XZ only
+        bv.Velocity = Vector3.new(); bv.Parent = root
+    end
+    return bv
+end
+local function FLW_killBV() local bv=FLW_getBV(); if bv then bv:Destroy() end end
+
+local function getTargetRootByName(name)
+    if not name or name=="" then return nil end
+    local p = Players:FindFirstChild(name); if not p then return nil end
+    local wf = workspace:FindFirstChild("Players")
+    if wf then local wfplr = wf:FindFirstChild(name); if wfplr then local hrp = wfplr:FindFirstChild("HumanoidRootPart"); if hrp then return hrp end end end
+    local ch = p.Character; return ch and ch:FindFirstChild("HumanoidRootPart") or nil
+end
+plr.CharacterAdded:Connect(function() task.defer(FLW_killBV) end)
+
+task.spawn(function()
+    while true do
+        if flw_toggle.Value then
+            local targetName = (flw_dd and flw_dd.Value) or ""
+            local keepDist   = tonumber(flw_dist.Value)  or 8
+            local speed      = tonumber(flw_speed.Value) or 21
+            local trg = getTargetRootByName(targetName)
+            if root and trg then
+                local bv = FLW_ensureBV()
+                local myPos  = root.Position
+                local trgPos = trg.Position
+                local v = Vector3.new(trgPos.X - myPos.X, 0, trgPos.Z - myPos.Z)
+                local d = v.Magnitude
+                local band = 0.8
+                if d > keepDist + band then
+                    bv.Velocity = v.Unit * speed
+                elseif d < math.max(keepDist - band, 1) then
+                    bv.Velocity = Vector3.new()
+                else
+                    bv.Velocity = v.Unit * (speed * 0.4)
+                end
+            else
+                local bv = FLW_getBV(); if bv then bv.Velocity = Vector3.new() end
+            end
+            RunService.Heartbeat:Wait()
+        else
+            FLW_killBV(); task.wait(0.15)
+        end
+    end
+end)
 
 -- ========= [ Finish / Autoload ] =========
 Window:SelectTab(1)
