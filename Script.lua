@@ -1399,6 +1399,115 @@ task.spawn(function()
     end
 end)
 
+-- ========= [ TAB: Heal (Auto-Heal) — ULTRA FAST, no "or" ] =========
+local HealTab = Window:AddTab({ Title = "Heal", Icon = "heart" })
+
+local heal_toggle = HealTab:CreateToggle("heal_auto", { Title = "Auto Heal", Default = false })
+local heal_item   = HealTab:CreateDropdown("heal_item", {
+    Title  = "Item to use",
+    Values = { "Bloodfruit","Bluefruit","Berry","Strawberry","Coconut","Apple","Lemon","Orange","Banana" },
+    Default = "Bloodfruit"
+})
+
+local heal_thresh = HealTab:CreateSlider("heal_thresh", { Title = "HP threshold (%)", Min = 1, Max = 100, Rounding = 0, Default = 70 })
+local heal_cd     = HealTab:CreateSlider("heal_cd",     { Title = "Per-bite delay (s)", Min = 0.00, Max = 0.30, Rounding = 2, Default = 0.02 })
+local heal_tick   = HealTab:CreateSlider("heal_tick",   { Title = "Check interval (s)", Min = 0.00, Max = 0.20, Rounding = 2, Default = 0.01 })
+local heal_hyst   = HealTab:CreateSlider("heal_hyst",   { Title = "Extra heal margin (%)", Min = 0, Max = 30, Rounding = 0, Default = 4 })
+local heal_burst  = HealTab:CreateSlider("heal_burst",  { Title = "Max items per burst", Min = 1, Max = 20, Rounding = 0, Default = 10 })
+
+-- «ультра»: многократная отправка в один кадр (только если включено)
+local heal_ultra  = HealTab:CreateToggle("heal_ultra",  { Title = "Ultra mode (multi-packet per frame)", Default = true })
+local heal_ppf    = HealTab:CreateSlider("heal_ppf",    { Title = "Packets per frame (ultra)", Min = 1, Max = 6, Rounding = 0, Default = 3 })
+
+local heal_debug  = HealTab:CreateToggle("heal_debug",  { Title = "Debug logs (F9)", Default = false })
+
+local function readHPpct()
+    if hum == nil then return 100 end
+    if hum.Health == nil then return 100 end
+    if hum.MaxHealth == nil then return 100 end
+    if hum.MaxHealth == 0 then return 100 end
+    local v = (hum.Health / hum.MaxHealth) * 100
+    if v < 0 then v = 0 end
+    if v > 100 then v = 100 end
+    return v
+end
+
+task.spawn(function()
+    while true do
+        if heal_toggle.Value and hum ~= nil and hum.Parent ~= nil then
+            local hp = readHPpct()
+            local thresh = heal_thresh.Value
+            if hp < thresh then
+                local target = thresh + heal_hyst.Value
+                if target > 100 then target = 100 end
+
+                local rounds = 0
+                local maxRounds = heal_burst.Value
+                if maxRounds < 1 then maxRounds = 1 end
+
+                repeat
+                    local it = heal_item.Value
+                    if it == nil or it == "" then it = "Bloodfruit" end
+
+                    -- одна «укус/использование»
+                    local did = false
+                    local slot = getSlotByName(it)
+                    if slot ~= nil then
+                        did = consumeBySlot(slot)
+                    end
+                    if did == false then
+                        local id = getItemIdByName(it)
+                        if id ~= nil then
+                            did = consumeById(id)
+                        end
+                    end
+
+                    -- ультра: добавочные пакеты в этот же кадр
+                    if heal_ultra.Value then
+                        local n = heal_ppf.Value
+                        if n < 1 then n = 1 end
+                        local j = 2
+                        while j <= n do
+                            local slot2 = getSlotByName(it)
+                            local used = false
+                            if slot2 ~= nil then
+                                used = consumeBySlot(slot2)
+                            end
+                            if used == false then
+                                local id2 = getItemIdByName(it)
+                                if id2 ~= nil then consumeById(id2) end
+                            end
+                            j = j + 1
+                        end
+                    end
+
+                    rounds = rounds + 1
+                    if heal_debug.Value then
+                        local msg = "[AutoHeal] bite "..tostring(rounds)
+                        if heal_ultra.Value then msg = msg.." x"..tostring(heal_ppf.Value) end
+                        print(msg)
+                    end
+
+                    -- пауза между «раундами»
+                    local d = heal_cd.Value
+                    if d <= 0 then
+                        task.wait()
+                    else
+                        task.wait(d)
+                    end
+
+                    hp = readHPpct()
+                until hp >= target or rounds >= maxRounds
+            end
+
+            -- интервал проверки
+            local tickDelay = heal_tick.Value
+            if tickDelay <= 0 then task.wait() else task.wait(tickDelay) end
+        else
+            task.wait(0.12)
+        end
+    end
+end)
 
 
 -- ========= [ Finish / Autoload ] =========
