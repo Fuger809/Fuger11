@@ -1,3 +1,6 @@
+-- Fuger Hub — Booga Booga Reborn (full merged build)
+-- UI: Fluent-Renewed  •  Автор: Fuger XD
+
 -- ========= [ Fluent UI и менеджеры ] =========
 local Library = loadstring(game:HttpGetAsync("https://github.com/1dontgiveaf/Fluent-Renewed/releases/download/v1.0/Fluent.luau"))()
 local SaveManager = loadstring(game:HttpGetAsync("https://raw.githubusercontent.com/1dontgiveaf/Fluent-Renewed/refs/heads/main/Addons/SaveManager.luau"))()
@@ -9,6 +12,8 @@ local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService        = game:GetService("RunService")
 local Workspace         = game:GetService("Workspace")
+local UIS               = game:GetService("UserInputService")
+local Lighting          = game:GetService("Lighting")
 
 local plr  = Players.LocalPlayer
 local char = plr.Character or plr.CharacterAdded:Wait()
@@ -65,77 +70,41 @@ local function sanitize(name)
     return name == "" and "default" or name
 end
 
--- === [ RouteLock: общий замок для Route/Follow — убирает чужие силы ] ===
-_G.__ROUTE_LOCK = _G.__ROUTE_LOCK or {count = 0, active = false}
-local function RouteLock(on)
-    local L = _G.__ROUTE_LOCK
-    if on then L.count = L.count + 1 else L.count = math.max(0, L.count - 1) end
-    L.active = (L.count > 0)
-
-    local c = Players.LocalPlayer.Character
-    local r = c and c:FindFirstChild("HumanoidRootPart")
-    if r and L.active then
-        for _,o in ipairs(r:GetChildren()) do
-            if o:IsA("BodyVelocity") or o:IsA("LinearVelocity")
-            or o:IsA("VectorForce")  or o:IsA("BodyForce")
-            or o:IsA("BodyThrust") then
-                o:Destroy()
-            end
-        end
-        local a = r:FindFirstChild("_MV_BV");    if a then a:Destroy() end
-        local b = r:FindFirstChild("_ROUTE_BV"); if b then b:Destroy() end
-        local c1 = r:FindFirstChild("_FLW_BV");  if c1 then c1:Destroy() end
-        r.Anchored = false
-        local h = c:FindFirstChildOfClass("Humanoid")
-        if h then h.PlatformStand = false end
-    end
-    return L.active
-end
-
--- ========= [ ROUTE persist (save/load) ] =========
+-- ========= [ ROUTE persist ] =========
 local function routePath(cfg) return "FluentScriptHub/specific-game/"..sanitize(cfg)..".route.json" end
 local ROUTE_AUTOSAVE = "FluentScriptHub/specific-game/_route_autosave.json"
 
 local function encodeRoute(points)
     local t = {}
     for i,p in ipairs(points or {}) do
-        t[i] = {
-            x = p.pos.X, y = p.pos.Y, z = p.pos.Z,
-            wait = p.wait or 0,
-            js = p.jump_start and true or nil,
-            je = p.jump_end   and true or nil,
-        }
+        t[i] = { x=p.pos.X, y=p.pos.Y, z=p.pos.Z, wait=p.wait or 0, js=p.jump_start or nil, je=p.jump_end or nil }
     end
     return t
 end
 local function decodeRoute(t)
     local out = {}
     for _,r in ipairs(t or {}) do
-        table.insert(out, {
-            pos = Vector3.new(r.x, r.y, r.z),
-            wait = (r.wait and r.wait > 0) and r.wait or nil,
-            jump_start = r.js or nil,
-            jump_end   = r.je or nil
-        })
+        table.insert(out, { pos=Vector3.new(r.x,r.y,r.z), wait=(r.wait and r.wait>0) and r.wait or nil, jump_start=r.js or nil, jump_end=r.je or nil })
     end
     return out
 end
-function Route_SaveToFile(path, points)
+local function Route_SaveToFile(path, points)
     if not writefile then return false end
     local ok, json = pcall(function() return HttpService:JSONEncode(encodeRoute(points)) end)
     if not ok then return false end
     local ok2 = pcall(writefile, path, json)
     return ok2 == true or ok2 == nil
 end
-function Route_LoadFromFile(path, Route, redraw)
+local function Route_LoadFromFile(path, Route, redraw)
     if not (isfile and readfile) or not isfile(path) then return false end
     local ok, json = pcall(readfile, path); if not ok then return false end
     local ok2, arr = pcall(function() return HttpService:JSONDecode(json) end); if not ok2 then return false end
     table.clear(Route.points)
-    if redraw and redraw.clearDots then redraw.clearDots() end
+    if redraw and type(redraw.clearDots) == "function" then redraw.clearDots() end
     for _,p in ipairs(decodeRoute(arr)) do
         table.insert(Route.points, p)
-        if redraw and redraw.dot then redraw.dot(Color3.fromRGB(255,230,80), p.pos, 0.7) end
+        if redraw and type(redraw.dot) == "function" then redraw.dot(Color3.fromRGB(255,230,80), p.pos, 0.7)
+        end
     end
     return true
 end
@@ -167,16 +136,15 @@ function consumeBySlot(slot)
     return false
 end
 _G.fruittoitemid = _G.fruittoitemid or {
-    Bloodfruit = 94, Bluefruit = 377, Lemon = 99, Coconut = 1, Jelly = 604,
-    Banana = 606, Orange = 602, Oddberry = 32, Berry = 35, Strangefruit = 302,
-    Strawberry = 282, Sunfruit = 128, Pumpkin = 80, ["Prickly Pear"] = 378,
-    Apple = 243, Barley = 247, Cloudberry = 101, Carrot = 147
+    Bloodfruit=94, Bluefruit=377, Lemon=99, Coconut=1, Jelly=604, Banana=606, Orange=602,
+    Oddberry=32, Berry=35, Strangefruit=302, Strawberry=282, Sunfruit=128, Pumpkin=80,
+    ["Prickly Pear"]=378, Apple=243, Barley=247, Cloudberry=101, Carrot=147
 }
 function getItemIdByName(name) local t=_G.fruittoitemid return t and t[name] or nil end
 function consumeById(id)
     if not id then return false end
     if packets and packets.ConsumeItem and packets.ConsumeItem.send then pcall(function() packets.ConsumeItem.send(id) end); return true end
-    if packets and packets.UseItem     and packets.UseItem.send     then pcall(function() packets.UseItem.send({itemID = id}) end); return true end
+    if packets and packets.UseItem     and packets.UseItem.send     then pcall(function() packets.UseItem.send({itemID=id}) end); return true end
     if packets and packets.Eat         and packets.Eat.send         then pcall(function() packets.Eat.send(id) end); return true end
     if packets and packets.EatFood     and packets.EatFood.send     then pcall(function() packets.EatFood.send(id) end); return true end
     return false
@@ -184,14 +152,12 @@ end
 
 -- ========= [ TAB: Configs ] =========
 Tabs.Configs = Window:AddTab({ Title = "Configs", Icon = "save" })
-
 local cfgName = "default"
-local cfgInput = Tabs.Configs:AddInput("cfg_name_input", { Title="Config name", Default=cfgName })
+local cfgInput = Tabs.Configs:AddInput("cfg_name_input",{ Title="Config name", Default=cfgName })
 cfgInput:OnChanged(function(v) cfgName = sanitize(v) end)
-
 Tabs.Configs:CreateButton({
-    Title = "Quick Save",
-    Callback = function()
+    Title="Quick Save",
+    Callback=function()
         local n = sanitize(cfgName)
         pcall(function() SaveManager:Save(n) end)
         Route_SaveToFile(routePath(n), (_G.__ROUTE and _G.__ROUTE.points) or {})
@@ -200,99 +166,28 @@ Tabs.Configs:CreateButton({
     end
 })
 Tabs.Configs:CreateButton({
-    Title = "Quick Load",
-    Callback = function()
+    Title="Quick Load",
+    Callback=function()
         local n = sanitize(cfgName)
         pcall(function() SaveManager:Load(n) end)
         if _G.__ROUTE then
             local ok = Route_LoadFromFile(routePath(n), _G.__ROUTE, _G.__ROUTE._redraw)
-            Library:Notify{
-                Title="Configs",
-                Content="Loaded "..n..(ok and " +route" or " (no route file)"),
-                Duration=3
-            }
+            Library:Notify{ Title="Configs", Content="Loaded "..n..(ok and " +route" or " (no route file)"), Duration=3 }
         else
             Library:Notify{ Title="Configs", Content="Loaded "..n, Duration=3 }
         end
     end
 })
-local auto = Tabs.Configs:CreateToggle("autoload_cfg", { Title="Autoload this config", Default=true })
+local auto = Tabs.Configs:CreateToggle("autoload_cfg",{ Title="Autoload this config", Default=true })
 auto:OnChanged(function(v)
     local n = sanitize(cfgName)
     if v then pcall(function() SaveManager:SaveAutoloadConfig(n) end)
     else pcall(function() SaveManager:DeleteAutoloadConfig() end) end
 end)
 
--- === [ переносимый экспорт/импорт ROUTE ] ===
-do
-    local function Route_ToString()
-        local arr = encodeRoute((_G.__ROUTE and _G.__ROUTE.points) or {})
-        local ok, json = pcall(function() return HttpService:JSONEncode(arr) end)
-        return ok and json or "[]"
-    end
-    local function Route_FromString(str)
-        if type(str) ~= "string" or str == "" then return false, "empty" end
-        local ok, t = pcall(function() return HttpService:JSONDecode(str) end)
-        if not ok or type(t) ~= "table" then return false, "bad json" end
-        if not _G.__ROUTE then return false, "no route obj" end
-        local points = decodeRoute(t)
-        table.clear(_G.__ROUTE.points)
-        if _G.__ROUTE._redraw and _G.__ROUTE._redraw.clearDots then _G.__ROUTE._redraw.clearDots() end
-        for _,p in ipairs(points) do
-            table.insert(_G.__ROUTE.points, p)
-            if _G.__ROUTE._redraw and _G.__ROUTE._redraw.dot then
-                _G.__ROUTE._redraw.dot(Color3.fromRGB(255,230,80), p.pos, 0.7)
-            end
-        end
-        if _G.__ROUTE._redraw and _G.__ROUTE._redraw.redrawLines then
-            _G.__ROUTE._redraw.redrawLines()
-        end
-        return true
-    end
 
-    local routeStr = ""
-    local routeInput = Tabs.Configs:AddInput("cfg_route_string", {
-        Title="Route JSON (paste here to import)",
-        Default="",
-        Placeholder="сюда вставь длинную строку JSON маршрута"
-    })
-    routeInput:OnChanged(function(v) routeStr = tostring(v or "") end)
 
-    Tabs.Configs:CreateButton({
-        Title="Fill input from CURRENT route",
-        Callback=function()
-            local s = Route_ToString()
-            routeStr = s
-            routeInput:SetValue(s)
-            Library:Notify{ Title="Route", Content="Input filled from current route", Duration=2 }
-        end
-    })
-    Tabs.Configs:CreateButton({
-        Title="Copy CURRENT route (JSON) to Clipboard",
-        Callback=function()
-            local s = Route_ToString()
-            if setclipboard then
-                pcall(setclipboard, s)
-                Library:Notify{ Title="Route", Content="Copied to clipboard!", Duration=2 }
-            else
-                print("[ROUTE JSON]\n"..s)
-                Library:Notify{ Title="Route", Content="setclipboard недоступен — строка в F9", Duration=4 }
-            end
-        end
-    })
-    Tabs.Configs:CreateButton({
-        Title="Load route from INPUT (replace current)",
-        Callback=function()
-            local ok, err = Route_FromString(routeStr)
-            if ok then
-                Library:Notify{ Title="Route", Content="Route loaded from input", Duration=3 }
-                pcall(function() Route_SaveToFile(ROUTE_AUTOSAVE, _G.__ROUTE.points) end)
-            else
-                Library:Notify{ Title="Route", Content="Import failed: "..tostring(err), Duration=4 }
-            end
-        end
-    })
-end
+
 
 -- ========= [ TAB: Survival (Auto-Eat) ] =========
 Tabs.Survival = Window:AddTab({ Title="Survival", Icon="apple" })
@@ -359,354 +254,673 @@ task.spawn(function()
     end
 end)
 
--- ========= [ TAB: Break (Radius) ] =========
-do
-    local BreakTab = Window:AddTab({ Title = "Break (Radius)", Icon = "hammer" })
-    local br_auto   = BreakTab:CreateToggle("br_auto",  { Title = "Auto Break (всё вокруг)", Default = false })
-    local br_range  = BreakTab:CreateSlider("br_range", { Title = "Range (studs)", Min = 5, Max = 150, Rounding = 0, Default = 35 })
-    local br_max    = BreakTab:CreateSlider("br_max",   { Title = "Max targets per swing", Min = 1, Max = 15, Rounding = 0, Default = 8 })
-    local br_cd     = BreakTab:CreateSlider("br_cd",    { Title = "Swing cooldown (s)", Min = 0.05, Max = 1.0, Rounding = 2, Default = 0.15 })
+-- ========= [ TAB: Heal (Auto-Heal) — ULTRA FAST, no "or" ] =========
+local HealTab = Window:AddTab({ Title = "Heal", Icon = "heart" })
 
-    local KNOWN_TARGETS = {
-        "Gold Node","Iron Node","Stone Node","Ice Node","Crystal Node",
-        "Adurite Node","Magnetite Node","Emerald Node","Pink Diamond Node","Void Stone",
-        "Tree","Big Tree","Bush","Boulder","Totem","Chest","Ancient Chest",
-        "Shelly","Rock","Log Pile","Leaf Pile","Coal Node"
-    }
-    local br_black = BreakTab:CreateToggle("br_black", { Title = "Use selection as Blacklist (else Whitelist)", Default = false })
-    local br_list  = BreakTab:CreateDropdown("br_list", { Title = "Targets (multi, optional)", Values = KNOWN_TARGETS, Multi  = true, Default = { } })
-    local br_debug = BreakTab:CreateToggle("br_dbg", { Title = "Debug (F9)", Default = false })
+local heal_toggle = HealTab:CreateToggle("heal_auto", { Title = "Auto Heal", Default = false })
+local heal_item   = HealTab:CreateDropdown("heal_item", {
+    Title  = "Item to use",
+    Values = { "Bloodfruit","Bluefruit","Berry","Strawberry","Coconut","Apple","Lemon","Orange","Banana" },
+    Default = "Bloodfruit"
+})
 
-    local function selectedSet()
-        local sel, val = {}, br_list.Value
-        if typeof(val) == "table" then for k,v in pairs(val) do if v then sel[string.lower(k)] = true end end end
-        return sel
+local heal_thresh = HealTab:CreateSlider("heal_thresh", { Title = "HP threshold (%)", Min = 1, Max = 100, Rounding = 0, Default = 70 })
+local heal_cd     = HealTab:CreateSlider("heal_cd",     { Title = "Per-bite delay (s)", Min = 0.00, Max = 0.30, Rounding = 2, Default = 0.02 })
+local heal_tick   = HealTab:CreateSlider("heal_tick",   { Title = "Check interval (s)", Min = 0.00, Max = 0.20, Rounding = 2, Default = 0.01 })
+local heal_hyst   = HealTab:CreateSlider("heal_hyst",   { Title = "Extra heal margin (%)", Min = 0, Max = 30, Rounding = 0, Default = 4 })
+local heal_burst  = HealTab:CreateSlider("heal_burst",  { Title = "Max items per burst", Min = 1, Max = 20, Rounding = 0, Default = 10 })
+
+-- «ультра»: многократная отправка в один кадр (только если включено)
+local heal_ultra  = HealTab:CreateToggle("heal_ultra",  { Title = "Ultra mode (multi-packet per frame)", Default = true })
+local heal_ppf    = HealTab:CreateSlider("heal_ppf",    { Title = "Packets per frame (ultra)", Min = 1, Max = 6, Rounding = 0, Default = 3 })
+
+local heal_debug  = HealTab:CreateToggle("heal_debug",  { Title = "Debug logs (F9)", Default = false })
+
+local function readHPpct()
+    if hum == nil then return 100 end
+    if hum.Health == nil then return 100 end
+    if hum.MaxHealth == nil then return 100 end
+    if hum.MaxHealth == 0 then return 100 end
+    local v = (hum.Health / hum.MaxHealth) * 100
+    if v < 0 then v = 0 end
+    if v > 100 then v = 100 end
+    return v
+end
+
+task.spawn(function()
+    while true do
+        if heal_toggle.Value and hum ~= nil and hum.Parent ~= nil then
+            local hp = readHPpct()
+            local thresh = heal_thresh.Value
+            if hp < thresh then
+                local target = thresh + heal_hyst.Value
+                if target > 100 then target = 100 end
+
+                local rounds = 0
+                local maxRounds = heal_burst.Value
+                if maxRounds < 1 then maxRounds = 1 end
+
+                repeat
+                    local it = heal_item.Value
+                    if it == nil or it == "" then it = "Bloodfruit" end
+
+                    -- одна «укус/использование»
+                    local did = false
+                    local slot = getSlotByName(it)
+                    if slot ~= nil then
+                        did = consumeBySlot(slot)
+                    end
+                    if did == false then
+                        local id = getItemIdByName(it)
+                        if id ~= nil then
+                            did = consumeById(id)
+                        end
+                    end
+
+                    -- ультра: добавочные пакеты в этот же кадр
+                    if heal_ultra.Value then
+                        local n = heal_ppf.Value
+                        if n < 1 then n = 1 end
+                        local j = 2
+                        while j <= n do
+                            local slot2 = getSlotByName(it)
+                            local used = false
+                            if slot2 ~= nil then
+                                used = consumeBySlot(slot2)
+                            end
+                            if used == false then
+                                local id2 = getItemIdByName(it)
+                                if id2 ~= nil then consumeById(id2) end
+                            end
+                            j = j + 1
+                        end
+                    end
+
+                    rounds = rounds + 1
+                    if heal_debug.Value then
+                        local msg = "[AutoHeal] bite "..tostring(rounds)
+                        if heal_ultra.Value then msg = msg.." x"..tostring(heal_ppf.Value) end
+                        print(msg)
+                    end
+
+                    -- пауза между «раундами»
+                    local d = heal_cd.Value
+                    if d <= 0 then
+                        task.wait()
+                    else
+                        task.wait(d)
+                    end
+
+                    hp = readHPpct()
+                until hp >= target or rounds >= maxRounds
+            end
+
+            -- интервал проверки
+            local tickDelay = heal_tick.Value
+            if tickDelay <= 0 then task.wait() else task.wait(tickDelay) end
+        else
+            task.wait(0.12)
+        end
     end
-    local function getTargetInfo(inst)
-        local eid = inst.GetAttribute and inst:GetAttribute("EntityID"); if not eid then return nil end
-        local pos
-        if inst:IsA("Model") then
-            local pp = inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart"); if not pp then return nil end
-            pos = pp.Position
-        elseif inst:IsA("BasePart") or inst:IsA("MeshPart") then pos = inst.Position else return nil end
-        local name = inst.Name
-        if inst.GetAttribute then name = inst:GetAttribute("DisplayName") or inst:GetAttribute("Name") or name end
-        return { eid=eid, pos=pos, name=tostring(name or "Unknown") }
+end)
+
+-- ========= [ TAB: Combat (By Name) — v2, no-Humanoid + ancestor name match ] =========
+local AntsNameTab = Window:AddTab({ Title = "Combat (By Name)", Icon = "target" })
+
+local an_on      = AntsNameTab:CreateToggle("an_on",      { Title = "Enable", Default = false })
+local an_range   = AntsNameTab:CreateSlider ("an_range",  { Title = "Range (studs)", Min = 6, Max = 160, Rounding = 0, Default = 38 })
+local an_targets = AntsNameTab:CreateSlider ("an_targets",{ Title = "Max targets / cycle", Min = 1, Max = 10, Rounding = 0, Default = 6 })
+local an_ptcd    = AntsNameTab:CreateSlider ("an_ptcd",   { Title = "Per-target cooldown (ms)", Min = 60, Max = 220, Rounding = 0, Default = 95 })
+local an_cdms    = AntsNameTab:CreateSlider ("an_cdms",   { Title = "Cycle cooldown (ms)", Min = 14, Max = 80, Rounding = 0, Default = 24 })
+local an_los     = AntsNameTab:CreateToggle("an_los",     { Title = "Line-of-sight check", Default = false })
+local an_exact   = AntsNameTab:CreateToggle("an_exact",   { Title = "Exact match (off = contains)", Default = false })
+local an_dbg     = AntsNameTab:CreateToggle("an_dbg",     { Title = "Debug (F9)", Default = false })
+
+-- дефолт: бьём только слуг, королеву не трогаем
+local DEFAULT_NAMES = {
+    ["Queen Ant's Servant"] = true,
+    ["Queen Ant’s Servant"] = true,
+    ["servant"] = true, -- на всякий случай (т.к. an_exact по умолчанию выключен)
+}
+local NAME_SET = {}
+for k,_ in pairs(DEFAULT_NAMES) do NAME_SET[string.lower(k)] = true end
+
+local function namesArrayFromSet(set) local t={} for n,_ in pairs(set) do t[#t+1]=n end table.sort(t) return t end
+local names_dropdown = AntsNameTab:CreateDropdown("an_names", {
+    Title = "Whitelist (multi, by name)",
+    Values = namesArrayFromSet(NAME_SET),
+    Multi  = true,
+    Default = {},
+})
+local newName=""
+local nameInput = AntsNameTab:AddInput("an_add_input", { Title="Add name (exact or part)", Default="" })
+nameInput:OnChanged(function(v) newName = tostring(v or "") end)
+AntsNameTab:CreateButton({
+    Title = "Add to whitelist",
+    Callback = function()
+        local s = (newName or ""):gsub("^%s+",""):gsub("%s+$","")
+        if s ~= "" then
+            NAME_SET[string.lower(s)] = true
+            if names_dropdown.SetValues then names_dropdown:SetValues(namesArrayFromSet(NAME_SET)) end
+            Library:Notify{ Title="By Name", Content=("Added: %s"):format(s), Duration=2 }
+        end
     end
-    local function collectBreakablesAround(center, radius)
-        local results = {}
-        local function scan(folder)
-            if not folder then return end
-            for _,inst in ipairs(folder:GetChildren()) do
-                if not (inst:IsA("Model") and inst:FindFirstChildOfClass("Humanoid")) then
-                    local info = getTargetInfo(inst)
-                    if info then
-                        local d = (info.pos - center).Magnitude
-                        if d <= radius then results[#results+1] = { eid=info.eid, dist=d, name=info.name } end
+})
+AntsNameTab:CreateButton({
+    Title = "Clear whitelist (reset)",
+    Callback = function()
+        table.clear(NAME_SET)
+        for k,_ in pairs(DEFAULT_NAMES) do NAME_SET[string.lower(k)] = true end
+        if names_dropdown.SetValues then names_dropdown:SetValues(namesArrayFromSet(NAME_SET)) end
+        Library:Notify{ Title="By Name", Content="Whitelist reset", Duration=2 }
+    end
+})
+
+-- ===== helpers
+local Players, RunService = game:GetService("Players"), game:GetService("RunService")
+local plr = Players.LocalPlayer
+local function myRoot()
+    local c = plr.Character
+    return c and (c:FindFirstChild("HumanoidRootPart") or c.PrimaryPart)
+end
+
+local RAY = RaycastParams.new()
+RAY.FilterType = Enum.RaycastFilterType.Exclude
+local function hasLOS(a, b)
+    if not an_los.Value then return true end
+    RAY.FilterDescendantsInstances = { plr.Character }
+    return workspace:Raycast(a, b - a, RAY) == nil
+end
+
+local function displayNameFromModel(m)
+    if not m then return "" end
+    if m.GetAttribute then
+        local dn = m:GetAttribute("DisplayName") or m:GetAttribute("Name") or m:GetAttribute("NPCType")
+        if dn and dn ~= "" then return tostring(dn) end
+    end
+    return tostring(m.Name or "")
+end
+
+local function nameMatches(str)
+    local s = string.lower(tostring(str or ""))
+    if s == "" then return false end
+    if an_exact.Value then
+        for k,_ in pairs(NAME_SET) do if s == k then return true end end
+    else
+        for k,_ in pairs(NAME_SET) do if s:find(k, 1, true) then return true end end
+    end
+    return false
+end
+
+-- подняться по предкам модели и найти ту, у которой совпадает имя/атрибуты
+local function findNamedAncestorModel(m)
+    local depth = 0
+    local cur = m
+    while cur and depth < 4 do
+        if cur:IsA("Model") then
+            local dn = displayNameFromModel(cur)
+            if nameMatches(dn) or nameMatches(cur.Name) then
+                return cur, (dn ~= "" and dn or cur.Name)
+            end
+        end
+        cur = cur.Parent
+        depth = depth + 1
+    end
+    return nil, nil
+end
+
+local function anyBasePart(m)
+    if not m then return nil end
+    return m:FindFirstChild("HumanoidRootPart")
+        or m.PrimaryPart
+        or m:FindFirstChildWhichIsA("BasePart")
+        or (function()
+            for _,d in ipairs(m:GetDescendants()) do
+                if d:IsA("BasePart") then return d end
+            end
+        end)()
+end
+
+local function extractEID(m)
+    if not m then return nil end
+    if m.GetAttribute then
+        local v = m:GetAttribute("EntityID") or m:GetAttribute("entityId") or m:GetAttribute("Id")
+              or m:GetAttribute("Entity")   or m:GetAttribute("ServerId")
+        if v then return v end
+    end
+    for _,d in ipairs(m:GetDescendants()) do
+        if d.GetAttribute then
+            local v = d:GetAttribute("EntityID") or d:GetAttribute("entityId") or d:GetAttribute("Id")
+                  or d:GetAttribute("Entity")   or d:GetAttribute("ServerId")
+            if v then return v end
+        end
+    end
+    return nil
+end
+
+local overlap = OverlapParams.new()
+overlap.FilterType = Enum.RaycastFilterType.Exclude
+overlap.FilterDescendantsInstances = { plr.Character }
+
+local function collectByName(radius)
+    local me = myRoot(); if not me then return {} end
+    local hits = workspace:GetPartBoundsInRadius(me.Position, radius, overlap)
+    if not hits or #hits == 0 then return {} end
+
+    local out, seen = {}, {}
+    for _,p in ipairs(hits) do
+        if p:IsA("BasePart") and p.Parent then
+            local mdl = p:FindFirstAncestorOfClass("Model")
+            if mdl and not seen[mdl] then
+                local named, label = findNamedAncestorModel(mdl)
+                if named then
+                    local part = anyBasePart(named)
+                    if part and hasLOS(me.Position + Vector3.new(0,2.6,0), part.Position + Vector3.new(0,1.6,0)) then
+                        seen[named] = true
+                        local d = (part.Position - me.Position).Magnitude
+                        out[#out+1] = {
+                            model = named,
+                            root  = part,
+                            dist  = d,
+                            name  = label or displayNameFromModel(named) or named.Name,
+                            eid   = extractEID(named)
+                        }
                     end
                 end
             end
         end
-        scan(workspace); scan(workspace:FindFirstChild("Resources"))
-        table.sort(results, function(a,b) return a.dist < b.dist end)
-        return results
     end
-    task.spawn(function()
-        while true do
-            if br_auto.Value and root then
-                local candidates = collectBreakablesAround(root.Position, br_range.Value)
-                local set = selectedSet()
-                local useBlack = br_black.Value
-                if next(set) ~= nil then
-                    local filtered = {}
-                    for _,c in ipairs(candidates) do
-                        local inSel = set[string.lower(c.name)] == true
-                        local pass  = (useBlack and (not inSel)) or ((not useBlack) and inSel)
-                        if pass then filtered[#filtered+1] = c end
-                    end
-                    candidates = filtered
-                end
-                if br_debug.Value then
-                    print(("[Break] candidates=%d (mode=%s)"):format(#candidates, br_black.Value and "Blacklist" or "Whitelist/ALL"))
-                end
-                if #candidates > 0 then
-                    local ids = {}
-                    for i = 1, math.min(br_max.Value, #candidates) do
-                        ids[#ids+1] = candidates[i].eid
-                        if br_debug.Value then print(("[Break] %d) %s [%.1f]"):format(i, candidates[i].name, candidates[i].dist)) end
-                    end
-                    swingtool(ids)
-                end
-                task.wait(br_cd.Value)
+    table.sort(out, function(a,b) return a.dist < b.dist end)
+    return out
+end
+
+-- дедуп ТОЛЬКО по модели (ID плавающий)
+local lastHit = {}
+local function pick(list, cap)
+    local now = tick()
+    local gap = (an_ptcd.Value or 95)/1000
+    local out = {}
+    for i=1,#list do
+        local key = list[i].model
+        if (now - (lastHit[key] or 0)) >= gap then
+            out[#out+1] = list[i]
+            if #out >= cap then break end
+        end
+    end
+    if #out == 0 then
+        for i=1, math.min(cap, #list) do out[#out+1] = list[i] end
+    end
+    return out
+end
+
+local function safeSwing(targets)
+    if #targets == 0 then return end
+    local ids = {}
+    for i=1,#targets do if targets[i].eid ~= nil then ids[#ids+1] = targets[i].eid end end
+    local sent = false
+    if #ids > 0 then
+        sent = pcall(function() swingtool(ids) end)
+        if an_dbg.Value then print(("-- [ByName] by ID x%d -> %s"):format(#ids, sent and "OK" or "ERR")) end
+    end
+    if not sent then
+        local insts = {}
+        for i=1,#targets do insts[#insts+1] = targets[i].model end
+        local ok2 = pcall(function() swingtool(insts) end)
+        if an_dbg.Value then print(("-- [ByName] by INST x%d -> %s"):format(#insts, ok2 and "OK" or "ERR")) end
+    end
+    local t = tick()
+    for i=1,#targets do lastHit[targets[i].model] = t end
+end
+
+task.spawn(function()
+    while true do
+        if an_on.Value then
+            local near = collectByName(an_range.Value)
+            if #near == 0 then
+                if an_dbg.Value then print("-- [ByName] no targets") end
             else
-                task.wait(0.12)
+                local picked = pick(near, math.max(1, math.floor(an_targets.Value)))
+                if an_dbg.Value then
+                    local a = picked[1]
+                    print(string.format("-- [ByName] '%s' d=%.1f eid=%s", a.name, a.dist, tostring(a.eid)))
+                end
+                safeSwing(picked)
+            end
+            task.wait((an_cdms.Value or 24)/1000)
+        else
+            task.wait(0.15)
+        end
+    end
+end)
+
+-- пресеты
+AntsNameTab:CreateButton({
+    Title = "Preset: Servants only",
+    Callback = function()
+        an_on:SetValue(true)
+        an_exact:SetValue(false) -- contains "servant"
+        an_range:SetValue(40)
+        an_targets:SetValue(6)
+        an_ptcd:SetValue(90)
+        an_cdms:SetValue(22)
+        an_los:SetValue(false)
+        table.clear(NAME_SET); NAME_SET["servant"]=true
+        if names_dropdown.SetValues then names_dropdown:SetValues(namesArrayFromSet(NAME_SET)) end
+    end
+})
+AntsNameTab:CreateButton({
+    Title = "Preset: Exact 'Queen Ant’s Servant'",
+    Callback = function()
+        an_on:SetValue(true)
+        an_exact:SetValue(true)
+        table.clear(NAME_SET)
+        NAME_SET[string.lower("Queen Ant's Servant")] = true
+        NAME_SET[string.lower("Queen Ant’s Servant")] = true
+        if names_dropdown.SetValues then names_dropdown:SetValues(namesArrayFromSet(NAME_SET)) end
+        an_range:SetValue(38)
+        an_targets:SetValue(6)
+        an_ptcd:SetValue(95)
+        an_cdms:SetValue(24)
+        an_los:SetValue(false)
+    end
+})
+
+
+-- ========= [ TAB: Farming (посадка/сбор + BV + Area Auto Build) ] =========
+Tabs.Farming = Window:AddTab({ Title = "Farming", Icon = "shovel" })
+local planttoggle     = Tabs.Farming:CreateToggle("planttoggle",    { Title = "Auto Plant (nearby Plant Boxes)", Default = false })
+local plantrange      = Tabs.Farming:CreateSlider("plantrange",     { Title = "Plant range (studs)", Min = 8, Max = 150, Rounding = 0, Default = 30 })
+local plantdelay      = Tabs.Farming:CreateSlider("plantdelay",     { Title = "Plant delay (s)", Min = 0.01, Max = 0.25, Rounding = 2, Default = 0.03 })
+local fruitdropdownUI = Tabs.Farming:CreateDropdown("fruitdropdown",{ Title = "Seed / Fruit", Values = {
+    "Bloodfruit","Bluefruit","Lemon","Coconut","Jelly","Banana","Orange","Oddberry",
+    "Berry","Strangefruit","Strawberry","Sunfruit","Pumpkin","Prickly Pear","Apple",
+    "Barley","Cloudberry","Carrot"
+}, Default = "Bloodfruit" })
+local harvesttoggle   = Tabs.Farming:CreateToggle("harvesttoggle",  { Title = "Auto Harvest (bushes)", Default = false })
+local harvestrange    = Tabs.Farming:CreateSlider("harvestrange",   { Title = "Harvest range (studs)", Min = 8, Max = 150, Rounding = 0, Default = 30 })
+local tweenrange      = Tabs.Farming:CreateSlider("tweenrange",     { Title = "Follow range (studs)", Min = 10, Max = 300, Rounding = 0, Default = 120 })
+local tweenplantboxtoggle = Tabs.Farming:CreateToggle("tweenplantboxtoggle", { Title = "Move to nearest empty Plant Box (BV)", Default = false })
+local tweenbushtoggle     = Tabs.Farming:CreateToggle("tweenbushtoggle",     { Title = "Move to nearest Fruit Bush (BV)", Default = false })
+
+local plantedboxes = {}
+local function plant(entityid, itemID)
+    if packets and packets.InteractStructure and packets.InteractStructure.send then
+        pcall(function() packets.InteractStructure.send({ entityID = entityid, itemID = itemID }) end)
+        plantedboxes[entityid] = true
+    end
+end
+local function getpbs(range)
+    if not root or not root.Parent then return {} end
+    local t = {}
+    local dep = workspace:FindFirstChild("Deployables")
+    if not dep then return t end
+    for _, d in ipairs(dep:GetChildren()) do
+        if d:IsA("Model") and d.Name=="Plant Box" then
+            local eid=d:GetAttribute("EntityID")
+            local pp=d.PrimaryPart or d:FindFirstChildWhichIsA("BasePart")
+            if eid and pp then
+                local dist=(pp.Position-root.Position).Magnitude
+                if dist<=range then table.insert(t,{entityid=eid,deployable=d,dist=dist}) end
             end
         end
-    end)
-end
-
--- ========= [ TAB: Route (обычный BV по XZ + lock + lightweight visuals) ] =========
-Tabs.Route = Window:AddTab({ Title = "Route", Icon = "route" })
-local R_gap   = Tabs.Route:CreateSlider("r_gap",  { Title="Point gap (studs)", Min=0.5, Max=8, Rounding=2, Default=2 })
-local R_spd   = Tabs.Route:CreateSlider("r_spd",  { Title="Follow speed",      Min=6, Max=40, Rounding=1, Default=20 })
-local R_loop  = Tabs.Route:CreateToggle("r_loop", { Title="Loop back & forth", Default=true })
-local R_click = Tabs.Route:CreateToggle("r_click",{ Title="Add points by mouse click", Default=false })
-local R_light   = Tabs.Route:CreateToggle("r_light",   { Title="Lightweight visuals", Default=true })
-local R_maxDots = Tabs.Route:CreateSlider("r_maxdots", { Title="Max dots on screen", Min=50, Max=800, Rounding=0, Default=300 })
-
-local Route = { points = {}, recording=false, running=false, _hb=nil, _jump=nil, _click=nil, _lastPos=nil, _idleT0=nil }
-_G.__ROUTE = Route
-
-local routeFolder = Workspace:FindFirstChild("_ROUTE_DOTS")  or Instance.new("Folder", Workspace); routeFolder.Name="_ROUTE_DOTS"
-local linesFolder = Workspace:FindFirstChild("_ROUTE_LINES") or Instance.new("Folder", Workspace); linesFolder.Name="_ROUTE_LINES"
-local COL_Y=Color3.fromRGB(255,230,80); local COL_R=Color3.fromRGB(230,75,75); local COL_B=Color3.fromRGB(90,155,255); local COL_L=Color3.fromRGB(255,200,70)
-
-local DOT_POOL, DOT_USED, DOT_QUEUE = {}, {}, {}
-local function allocDot()
-    local p = table.remove(DOT_POOL) or Instance.new("Part")
-    p.Name="_route_dot"; p.Anchored=true; p.CanCollide=false; p.CanQuery=false; p.CanTouch=false
-    p.Shape=Enum.PartType.Ball
-    p.Material = R_light.Value and Enum.Material.SmoothPlastic or Enum.Material.Neon
-    p.CastShadow = not R_light.Value
-    p.Transparency = R_light.Value and 0.35 or 0.1
-    p.Parent = routeFolder
-    DOT_USED[p]=true; table.insert(DOT_QUEUE,p)
-    local cap = (R_maxDots and R_maxDots.Value) or 300
-    while #DOT_QUEUE > cap do
-        local old = table.remove(DOT_QUEUE,1)
-        DOT_USED[old]=nil; old.Parent=nil; table.insert(DOT_POOL, old)
     end
-    return p
+    return t
 end
-local function dot(color,pos,size)
-    local p=allocDot(); p.Color=color
-    local s=size or (R_light.Value and 0.45 or 0.6)
-    p.Size=Vector3.new(s,s,s); p.CFrame=CFrame.new(pos + Vector3.new(0,0.12,0))
-end
-local function clearDots() for p,_ in pairs(DOT_USED) do DOT_USED[p]=nil; p.Parent=nil; table.insert(DOT_POOL,p) end; table.clear(DOT_QUEUE) end
-local function clearLines() for _,c in ipairs(linesFolder:GetChildren()) do c:Destroy() end end
-local function makeSeg(a,b)
-    local seg=Instance.new("Part")
-    seg.Name="_route_line"; seg.Anchored=true; seg.CanCollide=false; seg.CanQuery=false; seg.CanTouch=false
-    seg.Material = R_light.Value and Enum.Material.SmoothPlastic or Enum.Material.Neon
-    seg.Color=COL_L; seg.Transparency= R_light.Value and 0.45 or 0.2; seg.CastShadow = not R_light.Value
-    local mid=(a+b)/2; local dir=(b-a); local dist=dir.Magnitude
-    seg.Size=Vector3.new(0.12,0.12, math.max(0.05, dist))
-    seg.CFrame = CFrame.lookAt(mid, b); seg.Parent=linesFolder
-end
-local function redrawLines()
-    clearLines()
-    for i=1,#Route.points-1 do makeSeg(Route.points[i].pos, Route.points[i+1].pos) end
-    if R_loop.Value and #Route.points>=2 then makeSeg(Route.points[#Route.points].pos, Route.points[1].pos) end
-end
-Route._redraw = { clearDots=clearDots, dot=dot, clearLines=clearLines, redrawLines=redrawLines }
-
-local function ui(msg) pcall(function() Library:Notify{ Title="Route", Content=tostring(msg), Duration=2 } end) end
-local function pushPoint(pos,flags)
-    local r={pos=pos}; if flags then for k,v in pairs(flags) do r[k]=v end end
-    table.insert(Route.points, r)
-    local col = (r.jump_start or r.jump_end) and COL_B or (r.wait and COL_R or COL_Y)
-    dot(col,pos, R_light.Value and 0.45 or 0.6)
-    if not Route.recording then redrawLines() end
-end
-
--- BV для follow по XZ (не мешает прыжкам)
-local ROUTE_BV_NAME="_ROUTE_BV"
-local function getRouteBV() return root and root:FindFirstChild(ROUTE_BV_NAME) or nil end
-local function ensureRouteBV()
-    ensureChar(); if not (root and root.Parent) then return end
-    local bv=getRouteBV()
-    if not bv then
-        bv=Instance.new("BodyVelocity"); bv.Name=ROUTE_BV_NAME
-        bv.MaxForce = Vector3.new(1e9, 0, 1e9) -- Y=0 — прыжок не глушим
-        bv.Velocity = Vector3.new()
-        bv.Parent   = root
+local function getbushes(range, fruitname)
+    if not root or not root.Parent then return {} end
+    local bushes={}
+    for _,model in ipairs(workspace:GetChildren()) do
+        if model:IsA("Model") and model.Name:find(fruitname) then
+            local pp=model.PrimaryPart or model:FindFirstChildWhichIsA("BasePart")
+            if pp then
+                local d=(pp.Position-root.Position).Magnitude
+                if d<=range then
+                    local eid=model:GetAttribute("EntityID")
+                    if eid then table.insert(bushes,{entityid=eid,model=model,dist=d}) end
+                end
+            end
+        end
     end
+    return bushes
+end
+local function safePickup(eid)
+    local ok=pcall(function() pickup(eid) end)
+    if not ok and packets and packets.Pickup and packets.Pickup.send then pcall(function() packets.Pickup.send(eid) end) end
+end
+
+-- BV move helpers
+local RS = RunService
+local function ensureRoot() local ch=plr.Character return ch and ch:FindFirstChild("HumanoidRootPart") or nil end
+local function makeBV(rootPart)
+    local old=rootPart:FindFirstChildOfClass("BodyVelocity"); if old then old:Destroy() end
+    local bv=Instance.new("BodyVelocity"); bv.MaxForce=Vector3.new(1e9,0,1e9); bv.Velocity=Vector3.new(); bv.Parent=rootPart; return bv
+end
+local BV_STOP_TOL, BV_SPEED, BV_MAXSEG = 0.8, 21, 6
+local function moveBV_toPos(targetPos)
+    local rp=ensureRoot(); if not rp then return false end
+    local bv=makeBV(rp); local t0=tick()
+    while rp.Parent do
+        local cur=rp.Position
+        local vec=Vector3.new(targetPos.X-cur.X,0,targetPos.Z-cur.Z)
+        local d=vec.Magnitude
+        if d<=BV_STOP_TOL then bv.Velocity=Vector3.new(); break end
+        if tick()-t0>BV_MAXSEG then break end
+        bv.Velocity=(d>0 and vec.Unit or Vector3.new())*BV_SPEED
+        RS.Heartbeat:Wait()
+    end
+    if bv then bv:Destroy() end
+    return true
+end
+local function tweenplantbox(range)
+    while tweenplantboxtoggle.Value do
+        local plantboxes=getpbs(range)
+        table.sort(plantboxes,function(a,b) return a.dist<b.dist end)
+        for _,box in ipairs(plantboxes) do
+            if not box.deployable:FindFirstChild("Seed") then
+                local pp=box.deployable.PrimaryPart or box.deployable:FindFirstChildWhichIsA("BasePart")
+                if pp then moveBV_toPos(pp.Position) end
+                break
+            end
+        end
+        task.wait(0.05)
+    end
+end
+local function tweenpbs(range, fruitname)
+    while tweenbushtoggle.Value do
+        local bushes=getbushes(range,fruitname)
+        table.sort(bushes,function(a,b) return a.dist<b.dist end)
+        if #bushes>0 then
+            local bp=bushes[1].model.PrimaryPart or bushes[1].model:FindFirstChildWhichIsA("BasePart")
+            if bp then moveBV_toPos(bp.Position) end
+        else
+            local plantboxes=getpbs(range)
+            table.sort(plantboxes,function(a,b) return a.dist<b.dist end)
+            for _,box in ipairs(plantboxes) do
+                if not box.deployable:FindFirstChild("Seed") then
+                    local pp=box.deployable.PrimaryPart or box.deployable:FindFirstChildWhichIsA("BasePart")
+                    if pp then moveBV_toPos(pp.Position) end
+                    break
+                end
+            end
+        end
+        task.wait(0.05)
+    end
+end
+
+-- авто-посадка (ускорено батчами)
+local PLANT_BATCH, PLANT_GAP = 25, 0.02
+task.spawn(function()
+    while true do
+        if planttoggle.Value and root and root.Parent then
+            local range=tonumber(plantrange.Value) or 30
+            local delay=tonumber(plantdelay.Value) or 0.03
+            local itemID=_G.fruittoitemid[fruitdropdownUI.Value] or 94
+            local plantboxes=getpbs(range)
+            table.sort(plantboxes,function(a,b) return a.dist<b.dist end)
+            local planted=0
+            for _,box in ipairs(plantboxes) do
+                if not box.deployable:FindFirstChild("Seed") then
+                    plant(box.entityid,itemID); planted = planted + 1
+                    if planted%PLANT_BATCH==0 then task.wait(PLANT_GAP) end
+                else plantedboxes[box.entityid]=true end
+            end
+            task.wait(delay)
+        else task.wait(0.1) end
+    end
+end)
+
+-- авто-сбор (батчи)
+local HARVEST_BATCH, HARVEST_GAP = 20, 0.02
+task.spawn(function()
+    while true do
+        if harvesttoggle.Value and root and root.Parent then
+            local harvRange=tonumber(harvestrange.Value) or 30
+            local selected=fruitdropdownUI.Value
+            local bushes=getbushes(harvRange,selected)
+            table.sort(bushes,function(a,b) return a.dist<b.dist end)
+            local picked=0
+            for _,b in ipairs(bushes) do
+                safePickup(b.entityid); picked = picked + 1
+                if picked%HARVEST_BATCH==0 then task.wait(HARVEST_GAP) end
+            end
+            task.wait(0.05)
+        else task.wait(0.1) end
+    end
+end)
+-- раннеры BV
+task.spawn(function() while true do if not tweenplantboxtoggle.Value then task.wait(0.1) else tweenplantbox(tonumber(tweenrange.Value) or 250) end end end)
+task.spawn(function() while true do if not tweenbushtoggle.Value   then task.wait(0.1) else tweenpbs(tonumber(tweenrange.Value) or 20, fruitdropdownUI.Value) end end end)
+
+-- ========= [ Farming: Area Auto Build (BV) + визуал зона ] =========
+local BuildTab = Tabs.Farming
+local AB = { on=false, cornerA=nil, cornerB=nil, spacing=6.04, hoverY=5, speed=21,
+    stopTol=0.6, segTimeout=1.2, antiStuckTime=0.8, placeDelay=0.06,
+    sideStep=4.2, sideMaxTries=4, wallProbeLen=7.0, wallProbeHeight=2.4 }
+local AB_VIS_FOLDER = Workspace:FindFirstChild("_AB_VIS") or Instance.new("Folder", Workspace); AB_VIS_FOLDER.Name="_AB_VIS"
+local AB_zonePart, AB_zoneBox
+local function AB_clearVisual() if AB_zoneBox then AB_zoneBox:Destroy() AB_zoneBox=nil end if AB_zonePart then AB_zonePart:Destroy() AB_zonePart=nil end end
+local function AB_snap(v,s) return math.floor(v/s+0.5)*s end
+local function AB_updateVisual()
+    AB_clearVisual(); if not (AB.cornerA and AB.cornerB) then return end
+    local a,b=AB.cornerA,AB.cornerB; local step=AB.spacing
+    local xmin=AB_snap(math.min(a.X,b.X),step); local xmax=AB_snap(math.max(a.X,b.X),step)
+    local zmin=AB_snap(math.min(a.Z,b.Z),step); local zmax=AB_snap(math.max(a.Z,b.Z),step)
+    local sizeX=math.max(step,math.abs(xmax-xmin)+step); local sizeZ=math.max(step,math.abs(zmax-zmin)+step)
+    local y=(root and root.Position.Y or (a.Y+b.Y)/2)+0.15; local cf=CFrame.new((xmin+xmax)/2,y,(zmin+zmax)/2)
+    AB_zonePart=Instance.new("Part"); AB_zonePart.Name="_AB_ZONE"; AB_zonePart.Anchored=true; AB_zonePart.CanCollide=false; AB_zonePart.CanTouch=false; AB_zonePart.CanQuery=false
+    AB_zonePart.Material=Enum.Material.ForceField; AB_zonePart.Color=Color3.fromRGB(255,220,80); AB_zonePart.Transparency=0.8
+    AB_zonePart.Size=Vector3.new(sizeX,0.2,sizeZ); AB_zonePart.CFrame=cf; AB_zonePart.Parent=AB_VIS_FOLDER
+    AB_zoneBox=Instance.new("SelectionBox"); AB_zoneBox.LineThickness=0.03; AB_zoneBox.Color3=Color3.fromRGB(255,220,80); AB_zoneBox.SurfaceTransparency=1
+    AB_zoneBox.Adornee=AB_zonePart; AB_zoneBox.Parent=AB_VIS_FOLDER
+end
+plr.CharacterAdded:Connect(function() task.defer(function() ensureChar(); AB_updateVisual() end) end)
+local ab_toggle  = BuildTab:CreateToggle("ab_area_on",{ Title="Auto Build (BV) — Area", Default=false })
+local ab_spacing = BuildTab:CreateSlider("ab_area_spacing",{ Title="Spacing (studs)", Min=5.6, Max=7.2, Rounding=2, Default=6.04 })
+local ab_speed   = BuildTab:CreateSlider("ab_area_speed",{ Title="Speed (BV)", Min=10, Max=60, Rounding=1, Default=21 })
+BuildTab:CreateButton({ Title="Set Corner A (here)", Callback=function() if root then AB.cornerA=root.Position; AB_updateVisual() end end })
+BuildTab:CreateButton({ Title="Set Corner B (here)", Callback=function() if root then AB.cornerB=root.Position; AB_updateVisual() end end })
+BuildTab:CreateButton({ Title="Clear Area (A & B)",  Callback=function() AB.cornerA,AB.cornerB=nil,nil; AB_clearVisual() end })
+ab_spacing:OnChanged(function(v) AB.spacing=v; AB_updateVisual() end)
+ab_toggle:OnChanged(function(v) AB.on=v; if not v then local bv=root and root:FindFirstChild("_AB_BV"); if bv then bv:Destroy() end end end)
+ab_speed:OnChanged(function(v) AB.speed=v end)
+
+local function AB_getBV() if not root then return nil end return root:FindFirstChild("_AB_BV") end
+local function AB_ensureBV()
+    local bv=AB_getBV()
+    if not bv then bv=Instance.new("BodyVelocity"); bv.Name="_AB_BV"; bv.MaxForce=Vector3.new(1e9,0,1e9); bv.Velocity=Vector3.new(); bv.Parent=root end
     return bv
 end
-local function stopRouteBV() local bv=getRouteBV(); if bv then bv.Velocity=Vector3.new() end end
-local function killRouteBV() local bv=getRouteBV(); if bv then bv:Destroy() end end
-
--- клик-точки
-local UIS_click = game:GetService("UserInputService")
-local mouse = plr:GetMouse()
-local rayParams = RaycastParams.new(); rayParams.FilterType = Enum.RaycastFilterType.Exclude
-rayParams.FilterDescendantsInstances = { plr.Character }
-local function worldPointFromMouse()
-    local cam = workspace.CurrentCamera; if not cam then return end
-    local ur = cam:ViewportPointToRay(mouse.X, mouse.Y)
-    local hit = workspace:Raycast(ur.Origin, ur.Direction*5000, rayParams)
-    if hit then return hit.Position end
-    if mouse.Hit then return mouse.Hit.Position end
+local rayParamsAB = RaycastParams.new(); rayParamsAB.FilterType=Enum.RaycastFilterType.Exclude; rayParamsAB.FilterDescendantsInstances={plr.Character}
+local function wallAheadAB(dir2d)
+    if dir2d.Magnitude<1e-4 then return false end
+    local origin=root.Position+Vector3.new(0,AB.wallProbeHeight,0)
+    local dir3=Vector3.new(dir2d.X,0,dir2d.Z).Unit*AB.wallProbeLen
+    local hit=workspace:Raycast(origin,dir3,rayParamsAB); if not hit then return false end
+    return (hit.Normal.Y or 0)<0.55
 end
-local function startClickAdd()
-    if Route._click then Route._click:Disconnect(); Route._click=nil end
-    if not R_click.Value then return end
-    Route._click = mouse.Button1Down:Connect(function()
-        if Route.recording or Route.running then return end
-        local p = worldPointFromMouse(); if not p then return end
-        if #Route.points==0 then dot(COL_Y,p, R_light.Value and 0.55 or 0.75) end
-        pushPoint(p); ui(("added point #%d"):format(#Route.points))
-    end)
-end
-
--- ===== Record =====
-function _ROUTE_startRecord()
-    ensureChar()
-    if Route.recording or Route.running then return end
-    if not (hum and root and hum.Parent and root.Parent) then return end
-
-    RouteLock(true)
-    Route.recording = true
-    table.clear(Route.points); clearDots(); clearLines()
-    Route._lastPos = root.Position
-    Route._idleT0  = nil
-    pushPoint(Route._lastPos)
-
-    if Route._jump then Route._jump:Disconnect() end
-    Route._jump = hum.StateChanged:Connect(function(_,new)
-        if not Route.recording then return end
-        if new==Enum.HumanoidStateType.Jumping then
-            pushPoint(root.Position, {jump_start=true})
-        elseif new==Enum.HumanoidStateType.Landed then
-            pushPoint(root.Position, {jump_end=true})
-        end
-    end)
-
-    if Route._hb then Route._hb:Disconnect() end
-    Route._hb = RunService.Heartbeat:Connect(function()
-        if not Route.recording then return end
-        local cur = root.Position
-
-        -- idle -> WAIT
-        local vel    = root.AssemblyLinearVelocity or Vector3.zero
-        local planar = Vector3.new(vel.X,0,vel.Z).Magnitude
-        local moving = hum.MoveDirection.Magnitude > 0.10
-        local onGround = hum.FloorMaterial ~= Enum.Material.Air
-        local idle   = onGround and (planar <= 0.25) and (not moving)
-
-        if idle then
-            if not Route._idleT0 then
-                Route._idleT0 = tick()
-                pushPoint(cur, { _pendingWait = true })
-                dot(COL_R, cur, R_light.Value and 0.5 or 0.7)
+local function moveBV_to(target)
+    if not AB.on or not root then return false end
+    local bv=AB_ensureBV(); local t0, lastMoveT=tick(), tick(); local lastPos=root.Position; local timeCap=AB.segTimeout+6
+    while AB.on do
+        local rp=root.Position; local to2=Vector3.new(target.X-rp.X,0,target.Z-rp.Z); local dist=to2.Magnitude
+        if dist<=AB.stopTol then bv.Velocity=Vector3.new(); return true end
+        local dir=(dist>0) and to2.Unit or Vector3.new()
+        if wallAheadAB(dir) then
+            local perp=Vector3.new(-dir.Z,0,dir.X).Unit; local ok=false
+            for i=1,AB.sideMaxTries do
+                local rightHit=workspace:Raycast(rp+Vector3.new(0,AB.wallProbeHeight,0),(dir+perp).Unit*AB.wallProbeLen,rayParamsAB)
+                local leftHit =workspace:Raycast(rp+Vector3.new(0,AB.wallProbeHeight,0),(dir-perp).Unit*AB.wallProbeLen,rayParamsAB)
+                local sign=(not rightHit and leftHit) and 1 or ((rightHit and not leftHit) and -1 or (i%2==1 and 1 or -1))
+                local t1=tick(); while AB.on and tick()-t1<0.22 do bv.Velocity=perp*(AB.sideStep*2.0*sign); RunService.Heartbeat:Wait() end
+                bv.Velocity=Vector3.new(); if not wallAheadAB(dir) then ok=true break end
             end
-        else
-            if Route._idleT0 then
-                local dt = tick() - Route._idleT0
-                Route._idleT0 = nil
-                if dt >= 0.35 then
-                    for i = #Route.points, 1, -1 do
-                        local p = Route.points[i]
-                        if p._pendingWait then p._pendingWait = nil; p.wait = dt; break end
-                    end
-                else
-                    if Route.points[#Route.points] and Route.points[#Route.points]._pendingWait then
-                        table.remove(Route.points, #Route.points); redrawLines()
-                    end
-                end
-            end
+            if not ok then bv.Velocity=Vector3.new(); return false end
         end
-
-        if (cur - Route._lastPos).Magnitude >= ((R_gap and R_gap.Value) or 2) then
-            pushPoint(cur); Route._lastPos = cur
+        bv.Velocity=dir*AB.speed
+        local moved=(rp-lastPos).Magnitude; if moved>0.15 then lastMoveT=tick(); lastPos=rp end
+        if (tick()-lastMoveT)>AB.antiStuckTime then
+            local perp=Vector3.new(-dir.Z,0,dir.X).Unit
+            local t1=tick(); while AB.on and tick()-t1<0.2 do bv.Velocity=perp*(AB.sideStep*2); RunService.Heartbeat:Wait() end
+            bv.Velocity=Vector3.new(); t1=tick(); while AB.on and tick()-t1<0.2 do bv.Velocity=-perp*(AB.sideStep*2); RunService.Heartbeat:Wait() end
+            bv.Velocity=Vector3.new(); lastMoveT=tick()
         end
-    end)
-    ui("recording…")
-end
-
-function _ROUTE_stopRecord()
-    if not Route.recording then return end
-    Route.recording=false
-    if Route._hb   then Route._hb:Disconnect();   Route._hb=nil end
-    if Route._jump then Route._jump:Disconnect(); Route._jump=nil end
-
-    if Route._idleT0 then
-        local dt = tick() - Route._idleT0
-        Route._idleT0 = nil
-        if dt >= 0.35 then
-            for i = #Route.points, 1, -1 do local p = Route.points[i]
-                if p._pendingWait then p._pendingWait=nil; p.wait=dt; break end
-            end
-        else
-            if Route.points[#Route.points] and Route.points[#Route.points]._pendingWait then
-                table.remove(Route.points, #Route.points); redrawLines()
-            end
-        end
-    end
-
-    redrawLines()
-    RouteLock(false)
-    ui(("rec done (%d pts)"):format(#Route.points))
-    pcall(function() Route_SaveToFile(ROUTE_AUTOSAVE, Route.points) end)
-end
-
--- ===== Follow =====
-local function followSeg(p1,p2)
-    local bv=ensureRouteBV(); if not bv then return false end
-    local speed=(R_spd and R_spd.Value) or 20
-    local stopTol=1.05
-    local t0=tick()
-    while Route.running do
-        if not (root and root.Parent) then ensureChar(); if not (root and root.Parent) then break end end
-        local cur = root.Position
-        local vec = Vector3.new(p2.X-cur.X, 0, p2.Z-cur.Z)
-        local d = vec.Magnitude
-        if d <= stopTol then stopRouteBV(); return true end
-        bv.Velocity = (d>0 and vec.Unit or Vector3.new())*speed
-        if tick()-t0>8 then return false end
+        if (tick()-t0)>timeCap then bv.Velocity=Vector3.new(); return false end
         RunService.Heartbeat:Wait()
     end
-    stopRouteBV(); return false
+    return false
 end
-function _ROUTE_startFollow()
-    ensureChar()
-    if Route.running or Route.recording then return end
-    if #Route.points<2 then ui("no route"); return end
-    if not (root and root.Parent) then ui("char not ready"); return end
-
-    RouteLock(true)
-    Route.running=true; ensureRouteBV().Velocity=Vector3.new()
-    task.spawn(function()
-        while Route.running do
-            ui(R_loop.Value and "following (loop from start)" or "following")
-            for i=1,#Route.points-1 do
-                if not Route.running then break end
-                local pt=Route.points[i]
-                if pt.jump_start then pcall(function() hum.Jump=true; hum:ChangeState(Enum.HumanoidStateType.Jumping) end) end
-                if pt.wait and pt.wait>0 then stopRouteBV(); task.wait(pt.wait) end
-                if not followSeg(pt.pos, Route.points[i+1].pos) then Route.running=false break end
-            end
-            if Route.running and R_loop.Value then
-                followSeg(Route.points[#Route.points].pos, Route.points[1].pos)
-            else break end
+local function groundYAt(x,z)
+    local origin=Vector3.new(x,(root.Position.Y+50),z)
+    local hit=workspace:Raycast(origin,Vector3.new(0,-500,0),rayParamsAB)
+    if hit then return hit.Position.Y-0.1 end
+    return root.Position.Y-3
+end
+local function spotOccupied(pos,r) r=r or (AB.spacing*0.45)
+    local dep=workspace:FindFirstChild("Deployables"); if not dep then return false end
+    for _,d in ipairs(dep:GetChildren()) do
+        if d:IsA("Model") and d.Name=="Plant Box" then
+            local p=d.PrimaryPart or d:FindFirstChildWhichIsA("BasePart")
+            if p and (p.Position-pos).Magnitude<=r then return true end
         end
-        stopRouteBV(); killRouteBV(); Route.running=false
-        RouteLock(false)
-    end)
+    end
+    return false
 end
-function _ROUTE_stopFollow()
-    if not Route.running then return end
-    Route.running=false; stopRouteBV(); killRouteBV()
-    pcall(function() if hum then hum:ChangeState(Enum.HumanoidStateType.Running) end end)
-    RouteLock(false); ui("stopped")
+local function placePlantBoxAt(pos)
+    if packets and packets.PlaceStructure and packets.PlaceStructure.send then
+        pcall(function() packets.PlaceStructure.send{ buildingName="Plant Box", yrot=45, vec=pos, isMobile=false } end)
+        return true
+    end; return false
 end
-function _ROUTE_clear()
-    table.clear(Route.points); clearDots(); clearLines(); stopRouteBV(); killRouteBV(); ui("cleared")
+local function buildCellsFromArea()
+    if not (AB.cornerA and AB.cornerB) then return {} end
+    local a,b=AB.cornerA,AB.cornerB; local xmin,xmax=math.min(a.X,b.X),math.max(a.X,b.X); local zmin,zmax=math.min(a.Z,b.Z),math.max(a.Z,b.Z)
+    local step=AB.spacing; local function snap(v,s) return math.floor(v/s+0.5)*s end
+    xmin,xmax=snap(xmin,step),snap(xmax,step); zmin,zmax=snap(zmin,step),snap(zmax,step)
+    local cells, row={},0
+    for z=zmin,zmax,step do
+        local xs,xe,dx; if (row%2==0) then xs,xe,dx=xmin,xmax,step else xs,xe,dx=xmax,xmin,-step end
+        for x=xs,xe,dx do table.insert(cells, Vector3.new(x, groundYAt(x,z), z)) end
+        row = row + 1
+    end
+    return cells
 end
-
-Tabs.Route:CreateButton({ Title="Start record", Callback=_ROUTE_startRecord })
-Tabs.Route:CreateButton({ Title="Stop record",  Callback=_ROUTE_stopRecord  })
-Tabs.Route:CreateButton({ Title="Start follow", Callback=_ROUTE_startFollow })
-Tabs.Route:CreateButton({ Title="Stop follow",  Callback=_ROUTE_stopFollow  })
-Tabs.Route:CreateButton({ Title="Clear route",  Callback=_ROUTE_clear       })
-Tabs.Route:CreateButton({
-    Title = "Undo last point",
-    Callback = function() if #Route.points>0 then table.remove(Route.points,#Route.points); redrawLines(); ui("last point removed") end end
-})
-R_loop:OnChanged(redrawLines)
-R_click:OnChanged(function() startClickAdd(); ui(R_click.Value and "Click-to-add: ON" or "Click-to-add: OFF") end)
-startClickAdd()
+task.spawn(function()
+    while true do
+        if AB.on and AB.cornerA and AB.cornerB and root then
+            local cells=buildCellsFromArea()
+            for _,p in ipairs(cells) do
+                if not AB.on then break end
+                local fly=Vector3.new(p.X, root.Position.Y, p.Z)
+                local ok1=moveBV_to(fly); if not ok1 then continue end
+                if not spotOccupied(p) then placePlantBoxAt(p); task.wait(AB.placeDelay) end
+            end
+            local bv=AB_getBV(); if bv then bv:Destroy() end
+        else
+            local bv=AB_getBV(); if bv then bv:Destroy() end
+            task.wait(0.15)
+        end
+    end
+end)
 
 -- ========= [ TAB: Auto Loot ] =========
 Tabs.Loot = Window:AddTab({ Title = "Auto Loot", Icon = "package" })
@@ -723,27 +937,44 @@ local loot_cd        = Tabs.Loot:CreateSlider("loot_cd",      { Title="Tick cool
 local loot_chests    = Tabs.Loot:CreateToggle("loot_chests",  { Title="Also loot chests (Contents)", Default=true })
 local loot_blacklist = Tabs.Loot:CreateToggle("loot_black",   { Title="Use selection as Blacklist (else Whitelist)", Default=false })
 local loot_debug     = Tabs.Loot:CreateToggle("loot_debug",   { Title="Debug (F9)", Default=false })
-local loot_dropdown  = Tabs.Loot:CreateDropdown("loot_items", { Title="Items (multi)", Values=LOOT_ITEM_NAMES, Multi=true, Default={ Leaves=true, Log=true } })
-
-local function safePickup(eid) local ok = pcall(function() pickup(eid) end); if not ok and packets and packets.Pickup and packets.Pickup.send then pcall(function() packets.Pickup.send(eid) end) end end
+local loot_dropdown  = Tabs.Loot:CreateDropdown("loot_items", {
+    Title  = "Items (multi)",
+    Values = LOOT_ITEM_NAMES,
+    Multi  = true,
+    Default = { Leaves = true, Log = true }
+})
+local function safePickup2(eid)
+    local ok = pcall(function() pickup(eid) end)
+    if not ok and packets and packets.Pickup and packets.Pickup.send then
+        pcall(function() packets.Pickup.send(eid) end)
+    end
+end
 local DROP_FOLDERS = { "Items","Drops","WorldDrops","Loot","Dropped","Resources" }
 local watchedFolders, conns = {}, {}
 local cache = {}
 local function normalizedName(inst)
-    local a; if inst.GetAttribute then a = inst:GetAttribute("ItemName") or inst:GetAttribute("Name") or inst:GetAttribute("DisplayName") end
+    local a
+    if inst.GetAttribute then
+        a = inst:GetAttribute("ItemName") or inst:GetAttribute("Name") or inst:GetAttribute("DisplayName")
+    end
     if typeof(a) == "string" and a ~= "" then return a end
     return inst.Name
 end
 local function addDrop(inst)
     if cache[inst] then return end
-    local eid = inst.GetAttribute and inst:GetAttribute("EntityID"); if not eid then return end
+    local eid = inst.GetAttribute and inst:GetAttribute("EntityID")
+    if not eid then return end
     local name = normalizedName(inst)
     local getPos
     if inst:IsA("Model") then
-        local pp = inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart"); if not pp then return end
+        local pp = inst.PrimaryPart or inst:FindFirstChildWhichIsA("BasePart")
+        if not pp then return end
         getPos = function() return pp.Position end
-    elseif inst:IsA("BasePart") or inst:IsA("MeshPart") then getPos = function() return inst.Position end
-    else return end
+    elseif inst:IsA("BasePart") or inst:IsA("MeshPart") then
+        getPos = function() return inst.Position end
+    else
+        return
+    end
     cache[inst] = { eid = eid, name = name, getPos = getPos }
 end
 local function removeDrop(inst) cache[inst] = nil end
@@ -755,16 +986,22 @@ local function hookFolder(folder)
     conns[#conns+1] = folder.ChildRemoved:Connect(removeDrop)
 end
 local function hookChests()
-    local dep = workspace:FindFirstChild("Deployables"); if not dep then return end
+    local dep = workspace:FindFirstChild("Deployables")
+    if not dep then return end
     for _,mdl in ipairs(dep:GetChildren()) do
         if mdl:IsA("Model") then
             local contents = mdl:FindFirstChild("Contents")
-            if contents and not watchedFolders[contents] then hookFolder(contents) end
+            if contents and not watchedFolders[contents] then
+                hookFolder(contents)
+            end
         end
     end
     conns[#conns+1] = dep.ChildAdded:Connect(function(mdl)
         task.defer(function()
-            if mdl:IsA("Model") then local contents = mdl:FindFirstChild("Contents"); if contents then hookFolder(contents) end end
+            if mdl:IsA("Model") then
+                local contents = mdl:FindFirstChild("Contents")
+                if contents then hookFolder(contents) end
+            end
         end)
     end)
 end
@@ -772,23 +1009,28 @@ for _,n in ipairs(DROP_FOLDERS) do hookFolder(workspace:FindFirstChild(n)) end
 hookChests()
 task.spawn(function()
     while true do
-        for _,n in ipairs(DROP_FOLDERS) do local f = workspace:FindFirstChild(n); if f and not watchedFolders[f] then hookFolder(f) end end
+        for _,n in ipairs(DROP_FOLDERS) do
+            local f = workspace:FindFirstChild(n)
+            if f and not watchedFolders[f] then hookFolder(f) end
+        end
         if loot_chests.Value then hookChests() end
         task.wait(1.0)
     end
 end)
 local function selectedSet()
     local sel, val = {}, loot_dropdown.Value
-    if typeof(val) == "table" then for k,v in pairs(val) do if v then sel[string.lower(k)] = true end end end
+    if typeof(val) == "table" then
+        for k,v in pairs(val) do if v then sel[string.lower(k)] = true end end
+    end
     return sel
 end
 task.spawn(function()
     while true do
         if loot_on.Value and root then
-            local set = selectedSet()
-            local useBlack = loot_blacklist.Value
-            local range = loot_range.Value
-            local maxPer = math.max(1, math.floor(loot_batch.Value))
+            local set       = selectedSet()
+            local useBlack  = loot_blacklist.Value
+            local range     = loot_range.Value
+            local maxPer    = math.max(1, math.floor(loot_batch.Value))
             local candidates = {}
             for inst,info in pairs(cache) do
                 if inst.Parent then
@@ -816,10 +1058,15 @@ task.spawn(function()
                 end
             end
             if #candidates > 1 then table.sort(candidates, function(a,b) return a.dist < b.dist end) end
-            if loot_debug.Value then print(("[AutoLoot] candidates=%d (mode=%s, chests=%s)"):format(#candidates, useBlack and "Blacklist" or "Whitelist", tostring(loot_chests.Value))) end
+            if loot_debug.Value then
+                print(("[AutoLoot] candidates=%d (mode=%s, chests=%s)")
+                    :format(#candidates, useBlack and "Blacklist" or "Whitelist", tostring(loot_chests.Value)))
+            end
             for i = 1, math.min(maxPer, #candidates) do
-                safePickup(candidates[i].eid)
-                if loot_debug.Value then print(("[AutoLoot] pickup #%d: %s [%.1f]"):format(i, candidates[i].name, candidates[i].dist)) end
+                safePickup2(candidates[i].eid)
+                if loot_debug.Value then
+                    print(("[AutoLoot] pickup #%d: %s [%.1f]"):format(i, candidates[i].name, candidates[i].dist))
+                end
                 task.wait(0.01)
             end
             task.wait(loot_cd.Value)
@@ -829,551 +1076,201 @@ task.spawn(function()
     end
 end)
 
--- ========= [ TAB: Player — Selective NoClip ] =========
-local PlayerTab = Tabs.Player or Window:AddTab({ Title = "Player", Icon = "ghost" })
-local snc_on    = PlayerTab:CreateToggle("snc_on",   { Title = "Selective NoClip", Default = false })
-local snc_hold  = PlayerTab:CreateToggle("snc_hold", { Title = "Hold-to-clip (key B)", Default = true })
-local snc_range = PlayerTab:CreateSlider("snc_range",{ Title = "Scan range (studs)", Min=8, Max=80, Rounding=0, Default=36 })
-local snc_limit = PlayerTab:CreateSlider("snc_limit",{ Title = "Max parts / tick",  Min=30, Max=300, Rounding=0, Default=160 })
-local snc_tick  = PlayerTab:CreateSlider("snc_tick", { Title = "Update rate (s)",   Min=0.05, Max=0.40, Rounding=2, Default=0.18 })
 
-local UIS = game:GetService("UserInputService")
-local _heldB = false
-UIS.InputBegan:Connect(function(i,gp) if not gp and i.KeyCode==Enum.KeyCode.B then _heldB = true end end)
-UIS.InputEnded:Connect(function(i) if i.KeyCode==Enum.KeyCode.B then _heldB = false end end)
-local function isDown() return snc_on.Value or (snc_hold.Value and _heldB) end
 
-local function getCharParts()
-    local parts = {}
-    local c = plr.Character
-    if not c then return parts end
-    for _,v in ipairs(c:GetDescendants()) do
-        if v:IsA("BasePart") then parts[#parts+1] = v end
-    end
-    return parts
-end
 
-local MATERIAL_OK = {
-    [Enum.Material.Wood] = true, [Enum.Material.WoodPlanks] = true,
-    [Enum.Material.Rock] = true, [Enum.Material.Slate] = true, [Enum.Material.Basalt] = true,
-    [Enum.Material.Granite] = true, [Enum.Material.Ground] = true, [Enum.Material.Grass] = true,
-    [Enum.Material.Ice] = true, [Enum.Material.Cobblestone] = true, [Enum.Material.Sandstone] = true
+
+-- ========= [ TAB: ESP — God Set ] =========
+Tabs.ESP = Window:AddTab({ Title = "ESP (God Set)", Icon = "eye" })
+
+local esp_enable      = Tabs.ESP:CreateToggle("god_esp_enable",    { Title = "Enable ESP", Default = true })
+local esp_maxdist     = Tabs.ESP:CreateSlider("god_esp_maxdist",    { Title = "Max distance (studs)", Min=100, Max=3000, Rounding=0, Default=1200 })
+local esp_showlabel   = Tabs.ESP:CreateToggle("god_esp_showlabel",  { Title = "Show label over head", Default = true })
+local esp_highlight   = Tabs.ESP:CreateToggle("god_esp_highlight",  { Title = "Highlight only if Full Set (3/3)", Default = true })
+local esp_only_full   = Tabs.ESP:CreateToggle("god_esp_onlyfull",   { Title = "Show ONLY players with Full Set (3/3)", Default = false })
+
+-- цвета
+local COLOR_OK  = Color3.fromRGB(90,255,120)   -- 3/3
+local COLOR_LO  = Color3.fromRGB(255,210,80)   -- 1–2/3
+local COLOR_NO  = Color3.fromRGB(255,90,90)    -- 0/3
+
+-- имена частей сета
+local GOD_MATCH = {
+    halo  = { "God Halo", "Halo" },
+    chest = { "God Chestplate", "Chestplate", "God Armor", "Armor" },
+    legs  = { "God Legs", "Legs", "Greaves" },
 }
-local NAME_HINTS = {
-    "tree","log","plank","wood","wall","fence","gate","bridge","totem","boulder","rock",
-    "stone","node","ore","iron","gold","emerald","magnetite","adurite","crystal",
-    "ice","cave","shelly","chest","hut","house","raft","boat"
-}
-local function isBoogaEnvPart(p: BasePart): boolean
-    if not p or not p.Parent or not p.CanCollide then return false end
-    if p:IsDescendantOf(plr.Character) then return false end
-    if p.Parent:FindFirstChildOfClass("Humanoid") then return false end
-    local okMat = MATERIAL_OK[p.Material] or p:IsA("MeshPart"); if not okMat then return false end
-    local n = string.lower(p.Name)
-    for _,kw in ipairs(NAME_HINTS) do if string.find(n, kw, 1, true) then return true end end
-    if p.GetAttribute then
-        local dn = tostring(p:GetAttribute("DisplayName") or p:GetAttribute("Name") or ""):lower()
-        for _,kw in ipairs(NAME_HINTS) do if dn ~= "" and dn:find(kw, 1, true) then return true end end
-    end
-    return okMat
-end
-
-local activeNCC = {}  -- [envPart] = { [charPart] = NCC }
-local function addNoCollide(envPart: BasePart)
-    if not envPart or not envPart.Parent then return end
-    local perChar = activeNCC[envPart]; if not perChar then perChar = {}; activeNCC[envPart] = perChar end
-    for _,cp in ipairs(getCharParts()) do
-        if cp and cp.Parent and not perChar[cp] then
-            local ncc = Instance.new("NoCollisionConstraint")
-            ncc.Part0, ncc.Part1 = cp, envPart
-            ncc.Parent = cp
-            perChar[cp] = ncc
-        end
-    end
-end
-local function removeNoCollideFor(envPart: BasePart)
-    local perChar = activeNCC[envPart]
-    if perChar then for _,ncc in pairs(perChar) do if ncc then ncc:Destroy() end end; activeNCC[envPart] = nil end
-end
-local function clearAllNCC() for part,_ in pairs(activeNCC) do removeNoCollideFor(part) end end
-plr.CharacterAdded:Connect(function() task.defer(clearAllNCC) end)
-
-local overlap = OverlapParams.new()
-overlap.FilterType = Enum.RaycastFilterType.Exclude
-overlap.FilterDescendantsInstances = { plr.Character }
-local function getNearBoogaParts(origin: Vector3, radius: number, maxCount: number)
-    local res = {}
-    local hits = workspace:GetPartBoundsInRadius(origin, radius, overlap)
-    if not hits then return res end
-    for _,p in ipairs(hits) do
-        if p:IsA("BasePart") and p.CanCollide and isBoogaEnvPart(p) then
-            res[#res+1] = p
-            if #res >= maxCount then break end
-        end
-    end
-    return res
-end
-
-task.spawn(function()
-    while true do
-        if isDown() and root and root.Parent then
-            local near = getNearBoogaParts(root.Position, snc_range.Value, snc_limit.Value)
-            local keep = {}
-            for _,part in ipairs(near) do keep[part] = true; addNoCollide(part) end
-            for part,_ in pairs(activeNCC) do if (not part.Parent) or (not keep[part]) then removeNoCollideFor(part) end end
-            task.wait(snc_tick.Value)
-        else
-            clearAllNCC(); task.wait(0.15)
-        end
-    end
-end)
-
-
-
--- ========= [ TAB: Movement (Slope / Auto Climb + 360°) ] =========
-local UIS2 = game:GetService("UserInputService")
-local LRun = game:GetService("RunService")
-
-local MoveTab = Window:AddTab({ Title = "Movement", Icon = "mountain" })
-
--- базовые настройки
-local mv_on        = MoveTab:CreateToggle("mv_on",        { Title = "Slope / Auto Climb (BV)", Default = false })
-local mv_speed     = MoveTab:CreateSlider("mv_speed",     { Title = "Speed", Min = 8, Max = 40, Rounding = 1, Default = 20 })
-local mv_boost     = MoveTab:CreateToggle("mv_boost",     { Title = "Shift = Boost (+40%)", Default = true })
-local mv_jumphelp  = MoveTab:CreateToggle("mv_jumphelp",  { Title = "Auto Jump on slopes", Default = true })
-local mv_sidestep  = MoveTab:CreateToggle("mv_sidestep",  { Title = "Side step if blocked", Default = true })
-
--- зонды/анти-застревание
-local mv_probeLen  = MoveTab:CreateSlider("mv_probel",    { Title = "Wall probe length", Min = 4, Max = 12, Rounding = 1, Default = 7 })
-local mv_probeH    = MoveTab:CreateSlider("mv_probeh",    { Title = "Probe height", Min = 1.5, Max = 4, Rounding = 1, Default = 2.4 })
-local mv_stuckT    = MoveTab:CreateSlider("mv_stuck",     { Title = "Anti-stuck time (s)", Min = 0.2, Max = 1.2, Rounding = 2, Default = 0.6 })
-local mv_sideStep  = MoveTab:CreateSlider("mv_sidest",    { Title = "Side step power", Min = 2, Max = 7, Rounding = 1, Default = 4.2 })
-
--- новый режим: 360° подъём (можно спиной/боком)
-local mv_360       = MoveTab:CreateToggle("mv_360",       { Title = "360° climb (спиной/боком тоже)", Default = true })
-local mv_360_fov   = MoveTab:CreateSlider("mv_360_fov",   { Title = "Конус (°) вокруг движения", Min = 30, Max = 360, Rounding = 0, Default = 300 })
-local mv_360_rays  = MoveTab:CreateSlider("mv_360_rays",  { Title = "Кол-во лучей", Min = 4, Max = 24, Rounding = 0, Default = 12 })
-
--- утилиты BV
-local function getRoot()
-    if not root or not root.Parent then
-        local c = plr.Character
-        root = c and c:FindFirstChild("HumanoidRootPart") or root
-    end
-    return root
-end
-local function mv_getBV()
-    local rp = getRoot()
-    return rp and rp:FindFirstChild("_MV_BV") or nil
-end
-local function mv_ensureBV()
-    local rp = getRoot(); if not rp then return end
-    local bv = mv_getBV()
-    if not bv then
-        bv = Instance.new("BodyVelocity")
-        bv.Name = "_MV_BV"
-        bv.MaxForce = Vector3.new(1e9, 0, 1e9) -- движемся по XZ, прыжку не мешаем
-        bv.Velocity = Vector3.new()
-        bv.Parent = rp
-    end
-    return bv
-end
-local function mv_killBV()
-    local bv = mv_getBV(); if bv then bv:Destroy() end
-end
-
--- рейкасты
-local rayParams_mv = RaycastParams.new()
-rayParams_mv.FilterType = Enum.RaycastFilterType.Exclude
-rayParams_mv.FilterDescendantsInstances = { plr.Character }
-
-local function wallAheadXZ(dir2d)
-    local rp = getRoot(); if not rp then return false end
-    if dir2d.Magnitude < 1e-3 then return false end
-    local origin = rp.Position + Vector3.new(0, mv_probeH.Value, 0)
-    local dir3 = Vector3.new(dir2d.X, 0, dir2d.Z).Unit * mv_probeLen.Value
-    local hit = workspace:Raycast(origin, dir3, rayParams_mv)
-    if not hit then return false end
-    -- вертикальная/крутая поверхность
-    return (hit.Normal.Y or 0) < 0.6
-end
-
-local function rotate2D(v, deg)
-    local a = math.rad(deg)
-    local ca, sa = math.cos(a), math.sin(a)
-    return Vector3.new(v.X * ca - v.Z * sa, 0, v.X * sa + v.Z * ca)
-end
-
-local function blocked360(dir2d)
-    local rays = math.max(4, math.floor(mv_360_rays.Value))
-    local span = math.clamp(mv_360_fov.Value, 30, 360)
-    if dir2d.Magnitude < 1e-3 then
-        dir2d = Vector3.new(0,0,1) -- базовый вектор, если стоим
-        span = 360
-    end
-    local start = -span/2
-    local step  = span / (rays - 1)
-    for i = 0, rays - 1 do
-        local d = rotate2D(dir2d.Unit, start + i * step)
-        if wallAheadXZ(d) then return true end
-    end
-    return false
-end
-
-local function autoJump()
-    if not mv_jumphelp.Value then return end
-    if hum and hum.Parent then
-        pcall(function()
-            hum.Jump = true
-            hum:ChangeState(Enum.HumanoidStateType.Jumping)
-        end)
+local function nameMatch(n, list)
+    n = string.lower(tostring(n or ""))
+    for _,v in ipairs(list) do
+        if n:find(string.lower(v), 1, true) then return true end
     end
 end
 
-local function trySideStep(dir2d)
-    if not mv_sidestep.Value then return end
-    local rp = getRoot(); local bv = mv_ensureBV(); if not (rp and bv) then return end
-    local perp = Vector3.new(-dir2d.Z, 0, dir2d.X).Unit
-    local power = mv_sideStep.Value * 2
-    local t1 = tick()
-    while mv_on.Value and tick() - t1 < 0.18 do
-        bv.Velocity = perp * power
-        LRun.Heartbeat:Wait()
+local function countGodPieces(model)
+    -- считаем наличие трёх кусков (по именам в потомках модели персонажа)
+    local bits = {halo=false, chest=false, legs=false}
+    for _,d in ipairs(model:GetDescendants()) do
+        local nm = d.Name
+        if not bits.halo  and nameMatch(nm, GOD_MATCH.halo)  then bits.halo  = true end
+        if not bits.chest and nameMatch(nm, GOD_MATCH.chest) then bits.chest = true end
+        if not bits.legs  and nameMatch(nm, GOD_MATCH.legs)  then bits.legs  = true end
     end
-    bv.Velocity = Vector3.new()
-    t1 = tick()
-    while mv_on.Value and tick() - t1 < 0.18 do
-        bv.Velocity = -perp * power
-        LRun.Heartbeat:Wait()
-    end
-    bv.Velocity = Vector3.new()
+    local c = (bits.halo and 1 or 0) + (bits.chest and 1 or 0) + (bits.legs and 1 or 0)
+    return c
 end
 
--- основной цикл
-task.spawn(function()
-    local lastMoveT = tick()
-    while true do
-        if mv_on.Value and hum and root and hum.Parent then
-            local dir = hum.MoveDirection
-            local moving = dir.Magnitude > 0.05
-            local speed = mv_speed.Value
-            if mv_boost.Value and UIS2:IsKeyDown(Enum.KeyCode.LeftShift) then
-                speed = speed * 1.4
-            end
-
-            -- 360-сканирование препятствий (подъём спиной/боком)
-            if mv_360.Value then
-                local scanDir = moving and dir or Vector3.new(0,0,1)
-                if blocked360(scanDir) then
-                    autoJump()
-                    if moving then trySideStep(dir) end
-                end
-            else
-                if moving and wallAheadXZ(dir) then
-                    autoJump()
-                    trySideStep(dir)
-                end
-            end
-
-            -- движение
-            local bv = mv_ensureBV()
-            if moving then
-                bv.Velocity = dir.Unit * speed
-                lastMoveT = tick()
-            else
-                bv.Velocity = Vector3.new()
-            end
-
-            -- анти-застревание
-            if tick() - lastMoveT > mv_stuckT.Value then
-                local d2 = hum.MoveDirection
-                if d2.Magnitude > 0.05 then trySideStep(d2.Unit) end
-                lastMoveT = tick()
-            end
-
-            LRun.Heartbeat:Wait()
-        else
-            mv_killBV()
-            task.wait(0.12)
-        end
-    end
-end)
-
-plr.CharacterAdded:Connect(function()
-    task.defer(function()
-        ensureChar()
-        if not mv_on.Value then mv_killBV() end
-    end)
-end)
-mv_on:OnChanged(function(v) if not v then mv_killBV() end end)
-
-
--- =========================
--- TAB: Follow (следовать за игроком)
--- =========================
-Tabs.Follow = Window:AddTab({ Title = "Follow", Icon = "user" })
-local flw_toggle = Tabs.Follow:CreateToggle("flw_on", { Title="Follow selected player", Default=false })
-local flw_dist   = Tabs.Follow:CreateSlider("flw_dist", { Title="Keep distance (studs)", Min=2, Max=50, Rounding=1, Default=8 })
-local flw_speed  = Tabs.Follow:CreateSlider("flw_speed",{ Title="Speed (BV)", Min=5, Max=60, Rounding=1, Default=21 })
-
-local function getAllPlayerNames()
-    local list = {} for _, p in ipairs(Players:GetPlayers()) do if p ~= plr then table.insert(list, p.Name) end end
-    table.sort(list); return list
-end
-local flw_dd = Tabs.Follow:CreateDropdown("flw_target", { Title="Target player", Values=getAllPlayerNames(), Default="" })
-Tabs.Follow:CreateButton({ Title="Refresh list", Callback=function()
-    local names = getAllPlayerNames(); pcall(function() if flw_dd.SetValues then flw_dd:SetValues(names) end end)
-    local cur = (flw_dd and flw_dd.Value) or ""; if #names>0 and (cur=="" or cur==nil) then pcall(function() if flw_dd.SetValue then flw_dd:SetValue(names[1]) end end) end
-end })
-Players.PlayerAdded:Connect(function() pcall(function() if flw_dd.SetValues then flw_dd:SetValues(getAllPlayerNames()) end end) end)
-Players.PlayerRemoving:Connect(function(leaver)
-    pcall(function() if flw_dd.SetValues then flw_dd:SetValues(getAllPlayerNames()) end end)
-    if (flw_dd and flw_dd.Value) == leaver.Name then flw_toggle:SetValue(false) end
-end)
-
-local function FLW_getBV() return root and root:FindFirstChild("_FLW_BV") or nil end
-local function FLW_ensureBV()
-    if not root then return nil end
-    local bv = FLW_getBV()
-    if not bv then
-        bv = Instance.new("BodyVelocity"); bv.Name="_FLW_BV"
-        bv.MaxForce = Vector3.new(1e9, 0, 1e9) -- XZ only
-        bv.Velocity = Vector3.new(); bv.Parent = root
-    end
-    return bv
-end
-local function FLW_killBV() local bv=FLW_getBV(); if bv then bv:Destroy() end end
-
-local function getTargetRootByName(name)
-    if not name or name=="" then return nil end
-    local p = Players:FindFirstChild(name); if not p then return nil end
+-- иногда модель игрока лежит в workspace.Players/Имя
+local function getCharModel(p)
     local wf = workspace:FindFirstChild("Players")
-    if wf then local wfplr = wf:FindFirstChild(name); if wfplr then local hrp = wfplr:FindFirstChild("HumanoidRootPart"); if hrp then return hrp end end end
-    local ch = p.Character; return ch and ch:FindFirstChild("HumanoidRootPart") or nil
-end
-plr.CharacterAdded:Connect(function() task.defer(FLW_killBV) end)
-
-task.spawn(function()
-    while true do
-        if flw_toggle.Value then
-            local targetName = (flw_dd and flw_dd.Value) or ""
-            local keepDist   = tonumber(flw_dist.Value)  or 8
-            local speed      = tonumber(flw_speed.Value) or 21
-            local trg = getTargetRootByName(targetName)
-            if root and trg then
-                local bv = FLW_ensureBV()
-                local myPos  = root.Position
-                local trgPos = trg.Position
-                local v = Vector3.new(trgPos.X - myPos.X, 0, trgPos.Z - myPos.Z)
-                local d = v.Magnitude
-                local band = 0.8
-                if d > keepDist + band then
-                    bv.Velocity = v.Unit * speed
-                elseif d < math.max(keepDist - band, 1) then
-                    bv.Velocity = Vector3.new()
-                else
-                    bv.Velocity = v.Unit * (speed * 0.4)
-                end
-            else
-                local bv = FLW_getBV(); if bv then bv.Velocity = Vector3.new() end
-            end
-            RunService.Heartbeat:Wait()
-        else
-            FLW_killBV(); task.wait(0.15)
-        end
+    if wf then
+        local m = wf:FindFirstChild(p.Name)
+        if m and m:IsA("Model") then return m end
     end
-end)
-
--- ========= [ TAB: ESP — Wandering Trader (event + resilient) ] =========
-local TraderTab = Window:AddTab({ Title = "Trader ESP", Icon = "store" })
-
-local tr_enable    = TraderTab:CreateToggle("tr_esp_enable", { Title = "Enable Trader ESP", Default = true })
-local tr_showbb    = TraderTab:CreateToggle("tr_show_label", { Title = "Show overhead label", Default = true })
-local tr_highlight = TraderTab:CreateToggle("tr_highlight",  { Title = "Highlight model", Default = true })
-local tr_maxdist   = TraderTab:CreateSlider ("tr_maxdist",   { Title = "Max distance (studs)", Min=100, Max=5000, Rounding=0, Default=2000 })
-local tr_notify    = TraderTab:CreateToggle("tr_notify",     { Title = "Notify on spawn/despawn", Default = true })
-
--- hints
-local TRADER_NAME_HINTS = { "wandering trader","wanderingtrader","trader","wanderer" }
-local function textMatch(s, arr)
-    s = string.lower(tostring(s or ""))
-    for i=1,#arr do if string.find(s, arr[i], 1, true) then return true end end
-    return false
-end
-local function isTraderModel(m)
-    if not (m and m:IsA("Model")) then return false end
-    if textMatch(m.Name, TRADER_NAME_HINTS) then return true end
-    if m.GetAttribute then
-        if textMatch(m:GetAttribute("DisplayName"), TRADER_NAME_HINTS) then return true end
-        if textMatch(m:GetAttribute("Name"),        TRADER_NAME_HINTS) then return true end
-        if textMatch(m:GetAttribute("NPCType"),     TRADER_NAME_HINTS) then return true end
-    end
-    -- иногда имя на дочерних объектах
-    for _,ch in ipairs(m:GetChildren()) do
-        if textMatch(ch.Name, TRADER_NAME_HINTS) then return true end
-    end
-    return false
+    return p.Character
 end
 
--- utils
-local function modelRoot(m)
-    return m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
-end
-local function prettyName(m)
-    local dn
-    if m.GetAttribute then dn = m:GetAttribute("DisplayName") or m:GetAttribute("Name") or m:GetAttribute("NPCType") end
-    return (dn and dn~="") and tostring(dn) or "Wandering Trader"
-end
+local GOD_ESP = { map = {}, loop = nil, addConn=nil, remConn=nil }
 
--- visuals
-local function makeBillboard(adornee)
+local function makeBoard(adornee)
     local bb = Instance.new("BillboardGui")
-    bb.Name = "_ESP_TRADER_BB"; bb.AlwaysOnTop = true
-    bb.Size = UDim2.fromOffset(180, 26)
-    bb.StudsOffsetWorldSpace = Vector3.new(0,4,0)
-    bb.Adornee = adornee; bb.Parent = adornee
+    bb.Name = "_ESP_GODSET_BB"
+    bb.AlwaysOnTop = true
+    bb.Size = UDim2.fromOffset(150, 22)
+    bb.StudsOffsetWorldSpace = Vector3.new(0, 3.6, 0)
+    bb.Adornee = adornee
+    bb.Parent = adornee
+
     local tl = Instance.new("TextLabel")
-    tl.BackgroundTransparency = 1; tl.Size = UDim2.fromScale(1,1)
-    tl.Font = Enum.Font.GothamBold; tl.TextScaled = true
-    tl.TextStrokeTransparency = 0.25; tl.TextColor3 = Color3.fromRGB(255,220,90)
-    tl.Text = "Wandering Trader"; tl.Parent = bb
+    tl.BackgroundTransparency = 1
+    tl.Size = UDim2.fromScale(1,1)
+    tl.Font = Enum.Font.GothamBold
+    tl.TextScaled = true
+    tl.TextStrokeTransparency = 0.25
+    tl.Text = "God Set 0/3"
+    tl.Parent = bb
+
     return bb, tl
 end
+
 local function ensureHL(model)
-    local hl = model:FindFirstChild("_ESP_TRADER_HL")
+    local hl = model:FindFirstChild("_ESP_GODSET_HL")
     if not hl then
         hl = Instance.new("Highlight")
-        hl.Name = "_ESP_TRADER_HL"
+        hl.Name = "_ESP_GODSET_HL"
         hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        hl.FillTransparency = 1; hl.OutlineTransparency = 0
-        hl.OutlineColor = Color3.fromRGB(255,220,90)
-        hl.Adornee = model; hl.Parent = model
+        hl.FillTransparency = 1
+        hl.OutlineTransparency = 0
+        hl.Adornee = model
+        hl.Parent = model
     end
     return hl
 end
 
--- state
-local TR = { map = {}, loop = nil, addConn=nil, remConn=nil }
+local function attachPlayer(p)
+    if p == Players.LocalPlayer then return end
+    local m = getCharModel(p)
+    if not (m and m.Parent) then return end
+    local hrp = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChildWhichIsA("BasePart")
+    if not hrp then return end
 
-local function attachTrader(m)
-    if TR.map[m] then return end
-    local r = modelRoot(m)
-    local bb, tl, hl
+    local bb, tl = makeBoard(hrp)
+    local hl = ensureHL(m)
 
-    -- если пока нет корневой детали — дождёмся
-    if not r then
-        local tmpConn
-        tmpConn = m.ChildAdded:Connect(function(ch)
-            if ch:IsA("BasePart") or ch.Name == "HumanoidRootPart" then
-                r = modelRoot(m)
-                if r and TR.map[m] and TR.map[m].bb then
-                    TR.map[m].bb.Adornee = r
-                end
-            end
-        end)
-        -- создадим запись, билборд появится как только найдётся корень
-        TR.map[m] = { model=m, root=nil, bb=nil, tl=nil, hl=nil, label=prettyName(m), waitConn=tmpConn, lastTxt="" }
-    end
-
-    if r then
-        bb, tl = makeBillboard(r)
-        hl = ensureHL(m)
-        TR.map[m] = { model=m, root=r, bb=bb, tl=tl, hl=hl, label=prettyName(m), waitConn=nil, lastTxt="" }
-    end
-
-    if tr_notify.Value and Library and Library.Notify then
-        Library:Notify{ Title="Trader", Content="Wandering Trader FOUND", Duration=3 }
-    end
+    GOD_ESP.map[p] = { model=m, root=hrp, bb=bb, tl=tl, hl=hl }
 end
 
-local function detachTrader(m)
-    local rec = TR.map[m]; if not rec then return end
-    if rec.waitConn then pcall(function() rec.waitConn:Disconnect() end) end
+local function detachPlayer(p)
+    local rec = GOD_ESP.map[p]; if not rec then return end
     if rec.bb then pcall(function() rec.bb:Destroy() end) end
     if rec.hl then pcall(function() rec.hl:Destroy() end) end
-    TR.map[m] = nil
-    if tr_notify.Value and Library and Library.Notify then
-        Library:Notify{ Title="Trader", Content="Wandering Trader lost", Duration=2 }
-    end
+    GOD_ESP.map[p] = nil
 end
 
-local function startTraderESP()
-    if TR.loop then return end
+local function startGodESP()
+    if GOD_ESP.loop then return end
+    -- подключаем уже присутствующих
+    for _,p in ipairs(Players:GetPlayers()) do if p ~= Players.LocalPlayer then attachPlayer(p) end end
+    -- хук на вход/выход
+    GOD_ESP.addConn = Players.PlayerAdded:Connect(function(p) task.defer(function() attachPlayer(p) end) end)
+    GOD_ESP.remConn = Players.PlayerRemoving:Connect(detachPlayer)
 
-    -- первичный один-раз скан (легко, но полно)
-    for _,inst in ipairs(workspace:GetDescendants()) do
-        if inst:IsA("Model") and isTraderModel(inst) then attachTrader(inst) end
-    end
+    GOD_ESP.loop = RunService.Heartbeat:Connect(function()
+        if not esp_enable.Value then
+            -- скрываем всё, но держим объекты — чтобы не спамить созданием/удалением
+            for _,rec in pairs(GOD_ESP.map) do
+                if rec.bb then rec.bb.Enabled = false end
+                if rec.hl then rec.hl.Enabled = false end
+            end
+            return
+        end
 
-    -- глобальные вотчеры: ничего не пропустим
-    TR.addConn = workspace.DescendantAdded:Connect(function(inst)
-        if inst:IsA("Model") and isTraderModel(inst) then attachTrader(inst) end
-    end)
-    TR.remConn = workspace.DescendantRemoving:Connect(function(inst)
-        if TR.map[inst] then detachTrader(inst) end
-    end)
-
-    -- лёгкий апдейт раз в 0.2с
-    local acc = 0
-    TR.loop = RunService.Heartbeat:Connect(function(dt)
-        acc = acc + (dt or 0)
-        if acc < 0.20 then return end
-        acc = 0
-
-        local enabled = tr_enable.Value
-        local showBB  = tr_showbb.Value
-        local showHL  = tr_highlight.Value
-        local maxD    = tr_maxdist.Value
-
-        local myRoot = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") or nil
-        for m, rec in pairs(TR.map) do
-            if not (rec.model and rec.model.Parent) then
-                detachTrader(m)
-            else
-                -- если root появился позже — создадим визуал сейчас
-                if not rec.root then
-                    local nr = modelRoot(rec.model)
-                    if nr then
-                        local bb, tl = makeBillboard(nr)
-                        local hl = ensureHL(rec.model)
-                        rec.root, rec.bb, rec.tl, rec.hl = nr, bb, tl, hl
-                    end
+        local myRoot = (plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")) or nil
+        for p,rec in pairs(GOD_ESP.map) do
+            if not (rec.model and rec.model.Parent and rec.root and rec.root.Parent) then
+                -- переподцепляем (после респавна/телепорта)
+                detachPlayer(p)
+                attachPlayer(p)
+                rec = GOD_ESP.map[p]
+                if not rec then
+                    -- игрок мог уже уйти
                 end
-                if rec.root then
-                    -- дистанция/видимость
-                    local inRange, txt = true, rec.label
-                    if myRoot then
-                        local d = (rec.root.Position - myRoot.Position).Magnitude
-                        inRange = (d <= maxD)
-                        txt = rec.label .. string.format(" (%.0f)", d)
-                    end
-                    if rec.tl and txt ~= rec.lastTxt then rec.tl.Text = txt; rec.lastTxt = txt end
-                    if rec.bb then rec.bb.Enabled = enabled and showBB and inRange end
-                    if rec.hl then rec.hl.Enabled = enabled and showHL and inRange end
+            end
+
+            if rec then
+                local inDist = true
+                if myRoot then
+                    local d = (rec.root.Position - myRoot.Position).Magnitude
+                    inDist = (d <= esp_maxdist.Value)
+                end
+
+                local cnt = countGodPieces(rec.model)
+                local col = (cnt >= 3 and COLOR_OK) or (cnt >= 1 and COLOR_LO) or COLOR_NO
+
+                -- фильтр "только фулл"
+                local visibleByFilter = (not esp_only_full.Value) or (cnt >= 3)
+
+                if rec.tl then
+                    rec.tl.Text = string.format("God Set %d/3", cnt)
+                    rec.tl.TextColor3 = col
+                end
+
+                if rec.bb then
+                    rec.bb.Enabled = esp_showlabel.Value and inDist and visibleByFilter
+                end
+
+                if rec.hl then
+                    rec.hl.OutlineColor = col
+                    rec.hl.Enabled = (cnt >= 3 and esp_highlight.Value and inDist)
                 end
             end
         end
     end)
 end
 
-local function stopTraderESP()
-    if TR.loop   then TR.loop:Disconnect(); TR.loop=nil end
-    if TR.addConn then TR.addConn:Disconnect(); TR.addConn=nil end
-    if TR.remConn then TR.remConn:Disconnect(); TR.remConn=nil end
-    for m,_ in pairs(TR.map) do detachTrader(m) end
+local function stopGodESP()
+    if GOD_ESP.loop then GOD_ESP.loop:Disconnect() GOD_ESP.loop = nil end
+    if GOD_ESP.addConn then GOD_ESP.addConn:Disconnect() GOD_ESP.addConn=nil end
+    if GOD_ESP.remConn then GOD_ESP.remConn:Disconnect() GOD_ESP.remConn=nil end
+    for p,_ in pairs(GOD_ESP.map) do
+        detachPlayer(p)
+    end
 end
 
-tr_enable:OnChanged(function(v) if v then startTraderESP() else stopTraderESP() end end)
-if tr_enable.Value then startTraderESP() end
+-- управление из UI
+esp_enable:OnChanged(function(v)
+    if v then startGodESP() else stopGodESP() end
+end)
 
-
+-- автозапуск, если включено по умолчанию
+if esp_enable.Value then startGodESP() end
 
 
 -- ========= [ Finish / Autoload ] =========
 Window:SelectTab(1)
-Library:Notify{ Title="Fuger Hub", Content="Loaded: Configs + Survival + Gold + Route + Farming + Heal + Combat", Duration=6 }
+Library:Notify{ Title="Fuger Hub", Content="Loaded: Configs + Survival + Gold + Route + Farming + Heal + Loot + Player + Visuals + Movement", Duration=6 }
 pcall(function() SaveManager:LoadAutoloadConfig() end)
 pcall(function()
     local ok = Route_LoadFromFile(ROUTE_AUTOSAVE, _G.__ROUTE, _G.__ROUTE._redraw)
     if ok then Library:Notify{ Title="Route", Content="Route autosave loaded", Duration=3 } end
-end)
+end)  можешь улутшить посадку ягод? и чтоб без лагов былои что бне флагало
