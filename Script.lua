@@ -1498,118 +1498,144 @@ tr_enable:OnChanged(function(v) if v then startTraderESP() else stopTraderESP() 
 if tr_enable.Value then startTraderESP() end
 
 
--- =========================================================
--- ===============  GOLD FARM: вкладка + кнопки  ===========
--- =========================================================
-do
-    local GoldTab = Window:AddTab({ Title = "Gold Farm", Icon = "coins" })
+----------------------------------------------------------------
+-- TAB: Gold Farm (вшитый JSON + автогенерация при пустой строке)
+----------------------------------------------------------------
+Tabs.Gold = Window:AddTab({ Title = "Gold Farm", Icon = "coins" })
 
-    -- 1) если файл существует, берём из него
-    local GOLD_FARM_FILE = "FluentScriptHub/specific-game/gold_farm.route.json"
+-- ⬇⬇⬇ СЮДА ВСТАВЬ СВОЙ JSON МАРШРУТА (одной строкой) ⬇⬇⬇
+-- Формат: [{"x":..,"y":..,"z":..,"wait":0},{"x":..,"y":..,"z":..}, ...]
+-- Пример (удали его и вставь свой): [{"x":0,"y":20,"z":0},{"x":10,"y":20,"z":10},{"x":0,"y":20,"z":20},{"x":-10,"y":20,"z":10}]
+local EMBEDDED_GOLD_ROUTE_JSON = ""
+-- ↑↑↑ ОСТАВИШЬ ПУСТОЙ — будет авто-построение по Gold Node ↑↑↑
 
-    -- 2) иначе можно хранить маршрут прямо тут (вставь свой JSON внутрь [[ ... ]]):
-    --    Если не хочешь встраивать — оставь пустым "" и просто положи файл по пути выше.
-    local GOLD_FARM_JSON = [[
-    ]] -- <--- вставь сюда свой ДЛИННЫЙ JSON-маршрут при желании
+local GF_MAXDIST = 300   -- радиус поиска жил (если автоген)
+local GF_MINPTS  = 3
+local GF_PATH    = "FluentScriptHub/specific-game/goldfarm.route.json"
 
-    local function importRouteFromJsonString(jsonStr)
-        if type(jsonStr) ~= "string" or jsonStr == "" then
-            return false, "empty json"
+local function gf_ui(s) pcall(function() Library:Notify{ Title="Gold Farm", Content=tostring(s), Duration=3 } end) end
+local function gf_redraw()
+    local R = _G.__ROUTE
+    if not R then return end
+    if R._redraw and R._redraw.clearDots then R._redraw.clearDots() end
+    if R._redraw and R._redraw.clearLines then R._redraw.clearLines() end
+    for _,p in ipairs(R.points) do
+        if R._redraw and R._redraw.dot then R._redraw.dot(Color3.fromRGB(255,230,80), p.pos, 0.6) end
+    end
+    if R._redraw and R._redraw.redrawLines then R._redraw.redrawLines() end
+end
+
+-- Загрузка из ВШИТОЙ строки
+local function gf_load_from_embedded()
+    local str = tostring(EMBEDDED_GOLD_ROUTE_JSON or "")
+    if str == "" then return false end
+    local ok, arr = pcall(function() return HttpService:JSONDecode(str) end)
+    if not ok or type(arr) ~= "table" then return false end
+    table.clear(_G.__ROUTE.points)
+    for _,r in ipairs(arr) do
+        if r and r.x and r.y and r.z then
+            table.insert(_G.__ROUTE.points, {
+                pos = Vector3.new(r.x, r.y, r.z),
+                wait = (r.wait and r.wait > 0) and r.wait or nil,
+                jump_start = r.js or nil,
+                jump_end   = r.je or nil
+            })
         end
-        local ok, t = pcall(function() return HttpService:JSONDecode(jsonStr) end)
-        if not ok or type(t) ~= "table" then
-            return false, "bad json"
-        end
-        if not _G.__ROUTE then
-            return false, "route obj missing"
-        end
-        local points = decodeRoute(t)
-        table.clear(_G.__ROUTE.points)
-        if _G.__ROUTE._redraw and _G.__ROUTE._redraw.clearDots then _G.__ROUTE._redraw.clearDots() end
-        for _,p in ipairs(points) do
-            table.insert(_G.__ROUTE.points, p)
-            if _G.__ROUTE._redraw and _G.__ROUTE._redraw.dot then
-                _G.__ROUTE._redraw.dot(Color3.fromRGB(255,230,80), p.pos, 0.7)
-            end
-        end
-        if _G.__ROUTE._redraw and _G.__ROUTE._redraw.redrawLines then
-            _G.__ROUTE._redraw.redrawLines()
-        end
-        pcall(function() Route_SaveToFile(ROUTE_AUTOSAVE, _G.__ROUTE.points) end)
+    end
+    if #_G.__ROUTE.points >= 2 then
+        gf_redraw()
         return true
     end
+    return false
+end
 
-    local function loadGoldFarm()
-        -- пытаемся из файла
-        if isfile and readfile and isfile(GOLD_FARM_FILE) then
-            local ok, data = pcall(readfile, GOLD_FARM_FILE)
-            if ok and type(data) == "string" and #data > 0 then
-                local ok2, err = importRouteFromJsonString(data)
-                if ok2 then
-                    Library:Notify{ Title="Gold Farm", Content="Маршрут загружен из gold_farm.route.json", Duration=3 }
-                    return true
-                else
-                    Library:Notify{ Title="Gold Farm", Content="Ошибка JSON в файле: "..tostring(err), Duration=4 }
-                    return false
-                end
-            end
-        end
-        -- иначе — из встроенной строки
-        local ok3, err2 = importRouteFromJsonString(GOLD_FARM_JSON)
-        if ok3 then
-            Library:Notify{ Title="Gold Farm", Content="Маршрут загружен из встроенной строки", Duration=3 }
-            return true
-        else
-            Library:Notify{ Title="Gold Farm", Content="Нет файла и пустая встроенная строка. Вставь JSON или создай файл.", Duration=5 }
-            return false
+-- Загрузка из файла (если доступен файловый API)
+local function gf_try_load_file()
+    if not (isfile and readfile) or not isfile(GF_PATH) then return false end
+    return Route_LoadFromFile(GF_PATH, _G.__ROUTE, _G.__ROUTE._redraw)
+end
+
+-- Автогенерация: ищем Gold Node и строим кольцо
+local function isGoldNode(inst)
+    local name = tostring(inst.Name or ""):lower()
+    local function attr(k) local v = inst.GetAttribute and inst:GetAttribute(k); return v and tostring(v):lower() or "" end
+    local s = name .. " " .. attr("DisplayName") .. " " .. attr("Name")
+    return s:find("gold", 1, true) and s:find("node", 1, true)
+end
+local function basepartOf(m)
+    if m:IsA("Model") then
+        return m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
+    elseif m:IsA("BasePart") or m:IsA("MeshPart") then return m end
+end
+local function sortByAngle(pts, center)
+    table.sort(pts, function(a,b)
+        local va, vb = (a-center), (b-center)
+        return math.atan2(va.Z, va.X) < math.atan2(vb.Z, vb.X)
+    end)
+end
+local function gf_build_auto()
+    local hrp = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false, "нет персонажа" end
+    local origin = hrp.Position
+    local list = {}
+
+    local function consider(inst)
+        if not inst.Parent or not isGoldNode(inst) then return end
+        local bp = basepartOf(inst); if not bp then return end
+        if (bp.Position - origin).Magnitude <= GF_MAXDIST then
+            list[#list+1] = bp.Position
         end
     end
 
-    GoldTab:CreateButton({
-        Title   = "Load Gold Farm",
-        Callback= function()
-            loadGoldFarm()
-        end
-    })
+    local res = workspace:FindFirstChild("Resources")
+    if res then for _,x in ipairs(res:GetChildren()) do consider(x) end end
+    for _,x in ipairs(workspace:GetChildren()) do consider(x) end
 
-    GoldTab:CreateButton({
-        Title   = "Start Follow",
-        Callback= function()
-            if not _G.__ROUTE or #_G.__ROUTE.points < 2 then
-                if not loadGoldFarm() then return end
-            end
-            _ROUTE_startFollow()
-        end
-    })
+    if #list < GF_MINPTS then return false, ("нашёл мало жил: %d"):format(#list) end
+    sortByAngle(list, origin)
 
-    GoldTab:CreateButton({
-        Title   = "Stop Follow",
-        Callback= function()
-            _ROUTE_stopFollow()
-        end
-    })
-
-    GoldTab:CreateButton({
-        Title   = "Save as gold_farm.route.json",
-        Callback= function()
-            if writefile then
-                local ok, json = pcall(function() return HttpService:JSONEncode(encodeRoute(_G.__ROUTE.points or {})) end)
-                if ok then
-                    local ok2 = pcall(writefile, GOLD_FARM_FILE, json)
-                    Library:Notify{
-                        Title="Gold Farm",
-                        Content = ok2 and "Сохранено в gold_farm.route.json" or "Не удалось сохранить (writefile?)",
-                        Duration=3
-                    }
-                else
-                    Library:Notify{ Title="Gold Farm", Content="Не удалось закодировать маршрут", Duration=3 }
-                end
-            else
-                Library:Notify{ Title="Gold Farm", Content="writefile недоступен в этом окружении", Duration=4 }
-            end
-        end
-    })
+    table.clear(_G.__ROUTE.points)
+    for _,pos in ipairs(list) do table.insert(_G.__ROUTE.points, { pos = pos }) end
+    gf_redraw()
+    return true, ("построен маршрут: %d точек"):format(#list)
 end
+
+-- Обёртка загрузки
+local function gf_load()
+    -- 1) Вшитая строка (для телефона — приоритет)
+    if gf_load_from_embedded() then
+        gf_ui("Загружен вшитый маршрут (из скрипта)")
+        -- Плюс: если файловые функции есть — сохраним копию на диск
+        pcall(function()
+            if writefile then Route_SaveToFile(GF_PATH, _G.__ROUTE.points) end
+        end)
+        return true
+    end
+    -- 2) Файл (если доступен)
+    if gf_try_load_file() then
+        gf_ui("Загружен файл goldfarm.route.json")
+        return true
+    end
+    -- 3) Автогенерация рядом
+    local ok, msg = gf_build_auto()
+    if ok then
+        gf_ui(msg)
+        pcall(function() if writefile then Route_SaveToFile(GF_PATH, _G.__ROUTE.points) end end)
+        return true
+    else
+        gf_ui("Нет вшитого маршрута и автогенерация не удалась: " .. tostring(msg))
+        return false
+    end
+end
+
+-- Кнопки UI
+Tabs.Gold:CreateButton({ Title="Load Gold Farm",  Callback=function() gf_load() end })
+Tabs.Gold:CreateButton({ Title="Start follow",    Callback=function()
+    if _G.__ROUTE and #_G.__ROUTE.points >= 2 then _ROUTE_startFollow()
+    else gf_ui("Сначала загрузите маршрут (Load Gold Farm)") end
+end })
+Tabs.Gold:CreateButton({ Title="Stop follow",     Callback=function() _ROUTE_stopFollow() end })
+----------------------------------------------------------------
 
 
 -- ========= [ Finish / Autoload ] =========
