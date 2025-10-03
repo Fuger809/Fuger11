@@ -293,6 +293,148 @@ do
         end
     })
 end
+-- ==== GOLD FULL CONFIG (flags + route с паузами) ====
+do
+    local GOLDCFG_NAME = "gold"
+    local GOLDCFG_PATH = "FluentScriptHub/specific-game/"..GOLDCFG_NAME..".fullcfg.json"
+    local GOLDCFG_AUTO = "FluentScriptHub/specific-game/_autoload_gold_full.txt"
+    local ROUTE_AUTOSAVE_PATH = "FluentScriptHub/specific-game/_route_autosave.json"
+
+    local function gold_flags_copy()
+        local out, F = {}, (Library and Library.Flags) or {}
+        for k,v in pairs(F) do
+            local t = typeof(v)
+            if t=="boolean" or t=="number" or t=="string" then out[k]=v end
+        end
+        return out
+    end
+    local function gold_flags_apply(tbl)
+        if type(tbl)~="table" then return end
+        local Opts = (Library and Library.Options) or {}
+        local F    = (Library and Library.Flags) or {}
+        for k,v in pairs(tbl) do
+            local opt = Opts[k]
+            if opt and opt.SetValue then pcall(function() opt:SetValue(v) end) else F[k]=v end
+        end
+    end
+
+    local function gold_route_to_array()
+        local arr, pts = {}, (_G.__ROUTE and _G.__ROUTE.points) or {}
+        for i,p in ipairs(pts) do
+            arr[i] = {
+                x=p.pos.X, y=p.pos.Y, z=p.pos.Z,
+                wait = (p.wait and p.wait>0) and p.wait or 0,
+                js = p.jump_start or false,
+                je = p.jump_end   or false
+            }
+        end
+        return arr
+    end
+    local function gold_apply_route_array(arr)
+        if not _G.__ROUTE then return false end
+        local R = _G.__ROUTE
+        local rd = R._redraw
+        if rd and rd.clearDots then rd.clearDots() end
+        table.clear(R.points)
+        for _,r in ipairs(arr or {}) do
+            local pt = { pos = Vector3.new(r.x, r.y, r.z) }
+            if (tonumber(r.wait) or 0) > 0 then pt.wait = tonumber(r.wait) end
+            if r.js then pt.jump_start = true end
+            if r.je then pt.jump_end   = true end
+            table.insert(R.points, pt)
+            if rd and rd.dot then
+                local col = (pt.wait and pt.wait>0) and Color3.fromRGB(230,75,75) or Color3.fromRGB(255,230,80)
+                rd.dot(col, pt.pos, 0.7)
+            end
+        end
+        if rd and rd.redrawLines then rd.redrawLines() end
+        return true
+    end
+
+    local function gold_save()
+        local pkg = { flags = gold_flags_copy(), route = gold_route_to_array() }
+        local ok, json = pcall(function() return HttpService:JSONEncode(pkg) end)
+        if not ok or not writefile then return false end
+        local ok2 = pcall(writefile, GOLDCFG_PATH, json)
+        -- Пишем ещё и в autosave, чтобы follow позже подхватил даже если __ROUTE ещё не создан
+        pcall(function()
+            local rjson = HttpService:JSONEncode(pkg.route or {})
+            writefile(ROUTE_AUTOSAVE_PATH, rjson)
+        end)
+        return ok2 == true or ok2 == nil
+    end
+
+    local function gold_load()
+        if not (isfile and readfile) or not isfile(GOLDCFG_PATH) then return false end
+        local ok, json = pcall(readfile, GOLDCFG_PATH); if not ok then return false end
+        local ok2, pkg = pcall(function() return HttpService:JSONDecode(json) end); if not ok2 then return false end
+
+        if type(pkg.flags)=="table" then gold_flags_apply(pkg.flags) end
+
+        -- 1) сразу положим маршрут в autosave (с сохранёнными wait)
+        if type(pkg.route)=="table" then
+            pcall(function()
+                local rjson = HttpService:JSONEncode(pkg.route)
+                writefile(ROUTE_AUTOSAVE_PATH, rjson)
+            end)
+            -- 2) если __ROUTE уже есть — применим немедленно (визуал + паузы)
+            if _G.__ROUTE then
+                gold_apply_route_array(pkg.route)
+            end
+        end
+        return true
+    end
+
+    local function gold_set_autoload(on)
+        if not writefile then return end
+        pcall(writefile, GOLDCFG_AUTO, on and "1" or "")
+    end
+    local function gold_should_autoload()
+        return (isfile and readfile and isfile(GOLDCFG_AUTO) and (readfile(GOLDCFG_AUTO) or "") ~= "")
+    end
+
+    -- Кнопки на вкладке Configs
+    Tabs.Configs:CreateButton({
+        Title = "Save GOLD cfg (flags + route)",
+        Callback = function()
+            local ok = gold_save()
+            Library:Notify{ Title="GOLD cfg", Content = ok and "Saved" or "Save failed", Duration=3 }
+        end
+    })
+    Tabs.Configs:CreateButton({
+        Title = "Load GOLD cfg",
+        Callback = function()
+            local ok = gold_load()
+            Library:Notify{ Title="GOLD cfg", Content = ok and "Loaded" or "Load failed / not found", Duration=3 }
+        end
+    })
+    local gold_auto_toggle = Tabs.Configs:CreateToggle("gold_autoload", { Title="Auto load GOLD cfg", Default=true })
+    gold_auto_toggle:OnChanged(function(v)
+        gold_set_autoload(v)
+        Library:Notify{ Title="GOLD cfg", Content = v and "Autoload ON" or "Autoload OFF", Duration=2 }
+    end)
+
+    -- Автозагрузка при старте:
+    task.spawn(function()
+        if not gold_should_autoload() then return end
+        -- читаем пакет
+        if (isfile and readfile and isfile(GOLDCFG_PATH)) then
+            local ok,json = pcall(readfile, GOLDCFG_PATH)
+            local ok2,pkg = ok and pcall(function() return HttpService:JSONDecode(json) end) or false, nil
+            if ok2 and type(pkg)=="table" then
+                gold_flags_apply(pkg.flags or {})
+                -- кладём в autosave (так твой поздний автозагрузчик тоже увидит все wait)
+                pcall(function() writefile(ROUTE_AUTOSAVE_PATH, HttpService:JSONEncode(pkg.route or {})) end)
+                -- ждём появления __ROUTE и применяем с визуалом
+                local t0 = tick()
+                while not _G.__ROUTE and tick()-t0 < 10 do task.wait(0.1) end
+                if _G.__ROUTE and type(pkg.route)=="table" then gold_apply_route_array(pkg.route) end
+                Library:Notify{ Title="GOLD cfg", Content="Autoloaded GOLD cfg (with waits)", Duration=3 }
+            end
+        end
+    end)
+end
+
 
 -- ========= [ TAB: Survival (Auto-Eat) ] =========
 Tabs.Survival = Window:AddTab({ Title="Survival", Icon="apple" })
@@ -509,7 +651,7 @@ do
                 if #ids > 0 then
                     for s = 1, swings do
                         if br_retarget.Value and s > 1 then
-                            -- быстрый ретаргет
+                            -- быстрый ретаргет: обновим дистанции и пересоберём ids
                             myPos = root.Position
                             for j = 1, #candidates do
                                 local c = candidates[j]
@@ -583,7 +725,7 @@ end
 local function dot(color,pos,size)
     local p=allocDot(); p.Color=color
     local s=size or (R_light.Value and 0.45 or 0.6)
-    p.Size=Vector3.new(s,s,s); p.CFrame=CFrame.new(pos + Vector3.new(0,0,0.12))
+    p.Size=Vector3.new(s,s,s); p.CFrame=CFrame.new(pos + Vector3.new(0,0.12,0))
 end
 local function clearDots() for p,_ in pairs(DOT_USED) do DOT_USED[p]=nil; p.Parent=nil; table.insert(DOT_POOL,p) end; table.clear(DOT_QUEUE) end
 local function clearLines() for _,c in ipairs(linesFolder:GetChildren()) do c:Destroy() end end
@@ -651,45 +793,6 @@ local function startClickAdd()
         pushPoint(p); ui(("added point #%d"):format(#Route.points))
     end)
 end
-
--- ======= SYNC: DotsFolder <-> _G.__ROUTE.points  (ДОБАВЛЕНО) =======
-local function _setRouteFromArray(routeArr)
-    if not _G.__ROUTE then return end
-    if _G.__ROUTE._redraw and _G.__ROUTE._redraw.clearDots then _G.__ROUTE._redraw.clearDots() end
-    table.clear(_G.__ROUTE.points)
-    for _,r in ipairs(routeArr or {}) do
-        local v = Vector3.new(r.x, r.y, r.z)
-        table.insert(_G.__ROUTE.points, { pos = v })
-        if _G.__ROUTE._redraw and _G.__ROUTE._redraw.dot then
-            _G.__ROUTE._redraw.dot(Color3.fromRGB(255,230,80), v, 0.7)
-        end
-    end
-    if _G.__ROUTE._redraw and _G.__ROUTE._redraw.redrawLines then _G.__ROUTE._redraw.redrawLines() end
-end
-local function _collectRouteFromDots_SYNCONLY()
-    local folder = workspace:FindFirstChild("DotsFolder")
-    if not folder then return {} end
-    local arr = {}
-    for _, ch in ipairs(folder:GetChildren()) do
-        if ch:IsA("BasePart") and ch.Name:lower():find("dot") then
-            local idx = tonumber(ch:GetAttribute("RouteIndex")) or tonumber(ch.Name:match("Dot[_-]?(%d+)")) or 10^9
-            table.insert(arr, { idx = idx, pos = ch.Position })
-        end
-    end
-    table.sort(arr, function(a,b) return a.idx < b.idx end)
-    local out = {}
-    for i, r in ipairs(arr) do out[i] = { x=r.pos.X, y=r.pos.Y, z=r.pos.Z } end
-    return out
-end
-Tabs.Route:CreateButton({
-    Title = "Sync Dots → Route",
-    Callback = function()
-        local arr = _collectRouteFromDots_SYNCONLY()
-        _setRouteFromArray(arr)
-        pcall(function() Library:Notify{ Title="Route", Content="Dots → Route synced", Duration=2 } end)
-    end
-})
--- ======= /SYNC =======
 
 -- ===== Record =====
 function _ROUTE_startRecord()
@@ -806,7 +909,7 @@ local function followSeg(p1, p2)
                                    -((R_yMax and R_yMax.Value) or 10),
                                    ((R_yMax and R_yMax.Value) or 10))
 
-        -- сглаживаем (инерция)
+        -- сглаживаем (инерция), 0 — без сглаживания, ближе к 1 — плавнее
         local damp    = (R_yDamp and R_yDamp.Value) or 0.55
         Route._vy     = Route._vy or 0
         Route._vy     = Route._vy + (targetV - Route._vy) * (1 - damp)
@@ -1178,7 +1281,7 @@ local function blocked360(dir2d)
     local rays = math.max(4, math.floor(mv_360_rays.Value))
     local span = math.clamp(mv_360_fov.Value, 30, 360)
     if dir2d.Magnitude < 1e-3 then
-        dir2d = Vector3.new(0,0,1)
+        dir2d = Vector3.new(0,0,1) -- базовый вектор, если стоим
         span = 360
     end
     local start = -span/2
@@ -1231,6 +1334,7 @@ task.spawn(function()
                 speed = speed * 1.4
             end
 
+            -- 360-сканирование препятствий (подъём спиной/боком)
             if mv_360.Value then
                 local scanDir = moving and dir or Vector3.new(0,0,1)
                 if blocked360(scanDir) then
@@ -1244,6 +1348,7 @@ task.spawn(function()
                 end
             end
 
+            -- движение
             local bv = mv_ensureBV()
             if moving then
                 bv.Velocity = dir.Unit * speed
@@ -1252,6 +1357,7 @@ task.spawn(function()
                 bv.Velocity = Vector3.new()
             end
 
+            -- анти-застревание
             if tick() - lastMoveT > mv_stuckT.Value then
                 local d2 = hum.MoveDirection
                 if d2.Magnitude > 0.05 then trySideStep(d2.Unit) end
@@ -1292,9 +1398,9 @@ Tabs.Follow:CreateButton({ Title="Refresh list", Callback=function()
     local names = getAllPlayerNames(); pcall(function() if flw_dd.SetValues then flw_dd:SetValues(names) end end)
     local cur = (flw_dd and flw_dd.Value) or ""; if #names>0 and (cur=="" or cur==nil) then pcall(function() if flw_dd.SetValue then flw_dd:SetValue(names[1]) end end) end
 end })
-Players.PlayerAdded:Connect(function() pcall(function() if flw_dd.SetValues then flw_dd.SetValues(getAllPlayerNames()) end end) end)
+Players.PlayerAdded:Connect(function() pcall(function() if flw_dd.SetValues then flw_dd:SetValues(getAllPlayerNames()) end end) end)
 Players.PlayerRemoving:Connect(function(leaver)
-    pcall(function() if flw_dd.SetValues then flw_dd.SetValues(getAllPlayerNames()) end end)
+    pcall(function() if flw_dd.SetValues then flw_dd:SetValues(getAllPlayerNames()) end end)
     if (flw_dd and flw_dd.Value) == leaver.Name then flw_toggle:SetValue(false) end
 end)
 
@@ -1351,7 +1457,7 @@ task.spawn(function()
     end
 end)
 
--- ========= [ TAB: ESP — Wandering Trader ] =========
+-- ========= [ TAB: ESP — Wandering Trader (event + resilient) ] =========
 local TraderTab = Window:AddTab({ Title = "Trader ESP", Icon = "store" })
 
 local tr_enable    = TraderTab:CreateToggle("tr_esp_enable", { Title = "Enable Trader ESP", Default = true })
@@ -1360,6 +1466,7 @@ local tr_highlight = TraderTab:CreateToggle("tr_highlight",  { Title = "Highligh
 local tr_maxdist   = TraderTab:CreateSlider ("tr_maxdist",   { Title = "Max distance (studs)", Min=100, Max=5000, Rounding=0, Default=2000 })
 local tr_notify    = TraderTab:CreateToggle("tr_notify",     { Title = "Notify on spawn/despawn", Default = true })
 
+-- hints
 local TRADER_NAME_HINTS = { "wandering trader","wanderingtrader","trader","wanderer" }
 local function textMatch(s, arr)
     s = string.lower(tostring(s or ""))
@@ -1374,12 +1481,14 @@ local function isTraderModel(m)
         if textMatch(m:GetAttribute("Name"),        TRADER_NAME_HINTS) then return true end
         if textMatch(m:GetAttribute("NPCType"),     TRADER_NAME_HINTS) then return true end
     end
+    -- иногда имя на дочерних объектах
     for _,ch in ipairs(m:GetChildren()) do
         if textMatch(ch.Name, TRADER_NAME_HINTS) then return true end
     end
     return false
 end
 
+-- utils
 local function modelRoot(m)
     return m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
 end
@@ -1389,6 +1498,7 @@ local function prettyName(m)
     return (dn and dn~="") and tostring(dn) or "Wandering Trader"
 end
 
+-- visuals
 local function makeBillboard(adornee)
     local bb = Instance.new("BillboardGui")
     bb.Name = "_ESP_TRADER_BB"; bb.AlwaysOnTop = true
@@ -1415,6 +1525,7 @@ local function ensureHL(model)
     return hl
 end
 
+-- state
 local TR = { map = {}, loop = nil, addConn=nil, remConn=nil }
 
 local function attachTrader(m)
@@ -1422,6 +1533,7 @@ local function attachTrader(m)
     local r = modelRoot(m)
     local bb, tl, hl
 
+    -- если пока нет корневой детали — дождёмся
     if not r then
         local tmpConn
         tmpConn = m.ChildAdded:Connect(function(ch)
@@ -1432,6 +1544,7 @@ local function attachTrader(m)
                 end
             end
         end)
+        -- создадим запись, билборд появится как только найдётся корень
         TR.map[m] = { model=m, root=nil, bb=nil, tl=nil, hl=nil, label=prettyName(m), waitConn=tmpConn, lastTxt="" }
     end
 
@@ -1459,9 +1572,13 @@ end
 
 local function startTraderESP()
     if TR.loop then return end
+
+    -- первичный один-раз скан (легко, но полно)
     for _,inst in ipairs(workspace:GetDescendants()) do
         if inst:IsA("Model") and isTraderModel(inst) then attachTrader(inst) end
     end
+
+    -- глобальные вотчеры: ничего не пропустим
     TR.addConn = workspace.DescendantAdded:Connect(function(inst)
         if inst:IsA("Model") and isTraderModel(inst) then attachTrader(inst) end
     end)
@@ -1469,6 +1586,7 @@ local function startTraderESP()
         if TR.map[inst] then detachTrader(inst) end
     end)
 
+    -- лёгкий апдейт раз в 0.2с
     local acc = 0
     TR.loop = RunService.Heartbeat:Connect(function(dt)
         acc = acc + (dt or 0)
@@ -1485,6 +1603,7 @@ local function startTraderESP()
             if not (rec.model and rec.model.Parent) then
                 detachTrader(m)
             else
+                -- если root появился позже — создадим визуал сейчас
                 if not rec.root then
                     local nr = modelRoot(rec.model)
                     if nr then
@@ -1494,6 +1613,7 @@ local function startTraderESP()
                     end
                 end
                 if rec.root then
+                    -- дистанция/видимость
                     local inRange, txt = true, rec.label
                     if myRoot then
                         local d = (rec.root.Position - myRoot.Position).Magnitude
@@ -1520,202 +1640,7 @@ tr_enable:OnChanged(function(v) if v then startTraderESP() else stopTraderESP() 
 if tr_enable.Value then startTraderESP() end
 
 
--- =========[ TAB: Config (Portable) — flags + route (DotsFolder) ]=========
-local TabCfg = Window:AddTab({ Title = "Config (Portable)", Icon = "save" })
--- (переиспользуем HttpService)
 
--- --- utils
-local function _sanitize(s)
-    s = tostring(s or ""):gsub("[%c\\/:*?\"<>|]+",""):gsub("^%s+",""):gsub("%s+$","")
-    return s == "" and "default" or s
-end
-local function _route_path(cfg) return "FluentScriptHub/specific-game/".._sanitize(cfg)..".route.json" end
-local _ROUTE_AUTOSAVE = "FluentScriptHub/specific-game/_route_autosave.json"
-
-local function _ensureDotsFolder()
-    if not workspace:FindFirstChild("DotsFolder") then
-        local m = Instance.new("Model"); m.Name = "DotsFolder"; m.Parent = workspace
-        local c = Instance.new("IntValue"); c.Name = "Counter"; c.Parent = m; c.Value = 0
-    end
-    return workspace.DotsFolder
-end
-
--- --- route <-> array (по точкам Dot*)
-local function _collectRouteFromDots()
-    local folder = _ensureDotsFolder()
-    local arr = {}
-    for _, ch in ipairs(folder:GetChildren()) do
-        if ch:IsA("BasePart") and ch.Name:lower():find("dot") then
-            local idx = tonumber(ch:GetAttribute("RouteIndex")) or tonumber(ch.Name:match("Dot[_-]?(%d+)")) or 10^9
-            table.insert(arr, { idx = idx, pos = ch.Position })
-        end
-    end
-    table.sort(arr, function(a,b) return a.idx < b.idx end)
-    local out = {}
-    for i, r in ipairs(arr) do out[i] = { x=r.pos.X, y=r.pos.Y, z=r.pos.Z } end
-    return out
-end
-local function _applyRouteToDots(routeArr)
-    local folder = _ensureDotsFolder()
-    for _, ch in ipairs(folder:GetChildren()) do
-        if ch:IsA("BasePart") and ch.Name:lower():find("dot") then ch:Destroy() end
-    end
-    local counter = folder:FindFirstChild("Counter")
-    if counter then counter.Value = 0 end
-    for i, r in ipairs(routeArr or {}) do
-        local p = Instance.new("Part")
-        p.Parent = folder
-        p.Anchored = true
-        p.Position = Vector3.new(r.x, r.y, r.z)
-        p.Name = ("Dot_%03d"):format(i)
-        p.Size = Vector3.new(1,1,1)
-        p.Color = Color3.fromRGB(0,255,130)
-        p.CanCollide = false
-        p.Material = Enum.Material.Neon
-        p.Shape = Enum.PartType.Ball
-        p.Transparency = 0
-        p:SetAttribute("RouteIndex", i)
-        if counter then counter.Value += 1 end
-    end
-    -- ВАЖНО: сразу прокидываем в реальный Route
-    _setRouteFromArray(routeArr)
-end
-
--- --- file io for route
-local function _route_save_to_file(path, arr)
-    if not writefile then return false end
-    local ok, json = pcall(function() return HttpService:JSONEncode(arr) end)
-    if not ok then return false end
-    local ok2 = pcall(writefile, path, json)
-    return ok2 == true or ok2 == nil
-end
-local function _route_load_from_file(path)
-    if not (isfile and readfile) or not isfile(path) then return false end
-    local ok, json = pcall(readfile, path); if not ok then return false end
-    local ok2, arr = pcall(function() return HttpService:JSONDecode(json) end); if not ok2 then return false end
-    if type(arr) ~= "table" then return false end
-    _applyRouteToDots(arr); return true
-end
-
--- --- flags shallow copy/apply
-local function _flags_copy()
-    local out, F = {}, (Library and Library.Flags) or {}
-    for k,v in pairs(F) do
-        local t = typeof(v)
-        if t=="boolean" or t=="number" or t=="string" then out[k]=v end
-    end
-    return out
-end
-local function _flags_apply(tbl)
-    if type(tbl)~="table" then return end
-    local Opts = (Library and Library.Options) or {}
-    local F = (Library and Library.Flags) or {}
-    for k,v in pairs(tbl) do
-        local opt = Opts[k]
-        if opt and opt.SetValue then pcall(function() opt:SetValue(v) end) else F[k]=v end
-    end
-end
-
--- --- portable pack (flags+route) + очистка строки
-local function _clean_json_str(s)
-    if type(s)~="string" then return "" end
-    if #s>=3 and s:sub(1,3)==string.char(0xEF,0xBB,0xBF) then s=s:sub(4) end
-    s = s:gsub("\r\n","\n"):gsub("\0","")
-         :gsub("“","\""):gsub("”","\""):gsub("„","\"")
-         :gsub("’","'"):gsub("‘","'"):gsub("'", "\"")
-         :gsub(",%s*([}%]])","%1")
-    if s:find("%%[%da-fA-F][%da-fA-F]") then
-        s = s:gsub("%%(%x%x)", function(h) local n=tonumber(h,16); return n and string.char(n) or "" end)
-    end
-    return (s:match("^%s*(.-)%s*$") or s)
-end
-local function _portable_export()
-    local pkg = { flags=_flags_copy(), route=_collectRouteFromDots() }
-    local ok, json = pcall(function() return HttpService:JSONEncode(pkg) end)
-    return ok and json or nil
-end
-local function _portable_import(txt)
-    if type(txt)~="string" or txt=="" then return false, "empty" end
-    local ok, pkg = pcall(function() return HttpService:JSONDecode(txt) end)
-    if not ok then
-        local cleaned = _clean_json_str(txt)
-        ok, pkg = pcall(function() return HttpService:JSONDecode(cleaned) end)
-        if not ok then return false, "bad json" end
-    end
-    if type(pkg.flags)=="table" then _flags_apply(pkg.flags) end
-    if type(pkg.route)=="table" then
-        _applyRouteToDots(pkg.route)  -- рисуем точки
-        _setRouteFromArray(pkg.route) -- и МГНОВЕННО в Route, чтобы follow поехал
-    end
-    pcall(function() _route_save_to_file(_ROUTE_AUTOSAVE, _collectRouteFromDots()) end)
-    return true
-end
-
--- --- UI на вкладке Portable
-local cfgName2 = "default"
-local inputName = TabCfg:AddInput("cfg_name_input_tab", { Title="Config name", Default=cfgName2 })
-inputName:OnChanged(function(v) cfgName2 = _sanitize(v) end)
-
-TabCfg:CreateButton({
-    Title = "Quick Save (flags + route)",
-    Callback = function()
-        local n = _sanitize(cfgName2)
-        pcall(function() SaveManager:Save(n) end)
-        local routeArr = _collectRouteFromDots()
-        _route_save_to_file(_route_path(n), routeArr)
-        _route_save_to_file(_ROUTE_AUTOSAVE, routeArr)
-        Library:Notify{ Title="Config", Content="Saved "..n.." (+route)", Duration=3 }
-    end
-})
-TabCfg:CreateButton({
-    Title = "Quick Load (flags + route)",
-    Callback = function()
-        local n = _sanitize(cfgName2)
-        pcall(function() SaveManager:Load(n) end)
-        local ok = _route_load_from_file(_route_path(n))
-        -- доп. страховка: грузим также напрямую в _G.__ROUTE (если вдруг без Dots)
-        pcall(function() Route_LoadFromFile(_route_path(n), _G.__ROUTE, _G.__ROUTE._redraw) end)
-        Library:Notify{
-            Title="Config",
-            Content = ok and ("Loaded "..n.." +route") or ("Loaded "..n.." (no route)"),
-            Duration=3
-        }
-    end
-})
-
-local portable_str = ""
-local pInput = TabCfg:AddInput("portable_json_tab", {
-    Title = "Portable JSON (flags + route)",
-    Default = "",
-    Placeholder = "Вставь пакет сюда или нажми Export"
-})
-pInput:OnChanged(function(v) portable_str = tostring(v or "") end)
-
-TabCfg:CreateButton({
-    Title = "Export → Clipboard",
-    Callback = function()
-        local s = _portable_export()
-        if not s then Library:Notify{ Title="Portable", Content="Export failed", Duration=3 }; return end
-        portable_str = s; pInput:SetValue(s)
-        if setclipboard then pcall(setclipboard, s) end
-        Library:Notify{ Title="Portable", Content="Copied!", Duration=2 }
-    end
-})
-TabCfg:CreateButton({
-    Title = "Import from input",
-    Callback = function()
-        local ok, err = _portable_import(portable_str)
-        if ok then Library:Notify{ Title="Portable", Content="Imported & applied", Duration=3 }
-        else Library:Notify{ Title="Portable", Content="Ошибка: "..tostring(err), Duration=4 } end
-    end
-})
-
--- автоподхват маршрута при запуске
-pcall(function()
-    if _route_load_from_file(_ROUTE_AUTOSAVE) then
-        Library:Notify{ Title="Route", Content="Route autosave loaded", Duration=3 }
-    end
-end)
 
 -- ========= [ Finish / Autoload ] =========
 Window:SelectTab(1)
