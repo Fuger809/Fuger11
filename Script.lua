@@ -224,18 +224,74 @@ auto:OnChanged(function(v)
     else pcall(function() SaveManager:DeleteAutoloadConfig() end) end
 end)
 
--- === [ переносимый экспорт/импорт ROUTE (между ПК) ] ===
+-- === [ переносимый экспорт/импорт ROUTE (между ПК) — robust JSON/Base64 ] ===
 do
+    -- base64 (пробуем нативки, есть запасной)
+    local function b64_decode(s)
+        local f = (syn and syn.crypt and syn.crypt.base64 and syn.crypt.base64.decode)
+               or (syn and syn.crypto and syn.crypto.base64 and syn.crypto.base64.decode)
+               or (crypt and (crypt.base64decode or crypt.decode))
+               or (Krnl and Krnl.Base64Decode)
+        if type(f) == "function" then
+            local ok, out = pcall(f, s)
+            if ok and type(out) == "string" then return out end
+        end
+        local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+        s = s:gsub('[^'..b..'=]', '')
+        return (s:gsub('.', function(x)
+            if x == '=' then return '' end
+            local r,f='',(b:find(x)-1)
+            for i=6,1,-1 do r=r..(f%2^i - f%2^(i-1) > 0 and '1' or '0') end
+            return r
+        end):gsub('%d%d%d?%d?%d?%d?%d?%d?', function(x)
+            if #x ~= 8 then return '' end
+            local c=0
+            for i=1,8 do c=c + (x:sub(i,i)=='1' and 2^(8-i) or 0) end
+            return string.char(c)
+        end))
+    end
+
+    -- чистка вставки: убираем BOM/ZWSP/коды/кавычки и вынимаем массив [...]
+    local function sanitize_paste(str)
+        if type(str) ~= "string" then return "" end
+        local s = str
+        s = s:gsub("^%s*```[^\n]*\n", ""):gsub("\n```%s*$", "")     -- code fences
+        s = s:gsub("^\239\187\191", "")                              -- BOM
+             :gsub("[%z\1-\8\11\12\14-\31]", "")                    -- control chars
+             :gsub("\226\128\139", "")                               -- ZWSP
+             :gsub("\194\160", " ")                                  -- NBSP
+        -- “ ” ‘ ’ → "
+        s = s:gsub("[\226\128\156\226\128\157\226\128\152\226\128\153\239\189\146\239\189\147]", '"')
+        -- если внутри есть массив — вытащим его
+        s = s:match("%b[]") or s
+        return s
+    end
+
     local function Route_ToString()
         local arr = encodeRoute((_G.__ROUTE and _G.__ROUTE.points) or {})
         local ok, json = pcall(function() return HttpService:JSONEncode(arr) end)
         return ok and json or "[]"
     end
+
     local function Route_FromString(str)
-        if type(str) ~= "string" or str == "" then return false, "empty" end
-        local ok, t = pcall(function() return HttpService:JSONDecode(str) end)
-        if not ok or type(t) ~= "table" then return false, "bad json" end
+        local raw = sanitize_paste(str)
+
+        -- 1) пробуем обычный JSON
+        local okJ, t = pcall(function() return HttpService:JSONDecode(raw) end)
+
+        -- 2) если не получилось — Base64 (допустим префикс b64:)
+        if not okJ then
+            local b64 = raw:gsub("^%s*[Bb][64][:%s]+", ""):gsub("%s+", "")
+            local dec = b64_decode(b64)
+            if dec and #dec > 0 then
+                raw = sanitize_paste(dec)
+                okJ, t = pcall(function() return HttpService:JSONDecode(raw) end)
+            end
+        end
+
+        if not okJ or type(t) ~= "table" then return false, "bad json" end
         if not _G.__ROUTE then return false, "no route obj" end
+
         local points = decodeRoute(t)
         table.clear(_G.__ROUTE.points)
         if _G.__ROUTE._redraw and _G.__ROUTE._redraw.clearDots then _G.__ROUTE._redraw.clearDots() end
@@ -255,7 +311,7 @@ do
     local routeInput = Tabs.Configs:AddInput("cfg_route_string", {
         Title="Route JSON (paste here to import)",
         Default="",
-        Placeholder="сюда вставь длинную строку JSON маршрута"
+        Placeholder="сюда вставь JSON или b64:AAA…"
     })
     routeInput:OnChanged(function(v) routeStr = tostring(v or "") end)
 
@@ -264,7 +320,7 @@ do
         Callback=function()
             local s = Route_ToString()
             routeStr = s
-            routeInput:SetValue(s)
+            if routeInput and routeInput.SetValue then routeInput:SetValue(s) end
             Library:Notify{ Title="Route", Content="Input filled from current route", Duration=2 }
         end
     })
@@ -294,6 +350,7 @@ do
         end
     })
 end
+
 
 -- ========= [ TAB: Survival (Auto-Eat) ] =========
 Tabs.Survival = Window:AddTab({ Title="Survival", Icon="apple" })
@@ -1579,6 +1636,157 @@ Tabs.Portable:CreateButton({
         Library:Notify{ Title="Portable", Content="Current state → input", Duration=2 }
     end
 })
+
+-- ========= [ Combat — Ultra Turbo Packet KA ] =========
+Tabs.Combat = Tabs.Combat or Window:AddTab({ Title = "Combat", Icon = "axe" })
+local Players = game:GetService("Players")
+local LP      = Players.LocalPlayer
+
+-- UI
+local u_on     = Tabs.Combat:CreateToggle("u_on",   { Title = "Ultra Turbo KillAura", Default = false })
+local u_rng    = Tabs.Combat:CreateSlider ("u_rng",  { Title = "Range", Min = 4, Max = 40, Rounding = 1, Default = 12 })
+local u_max    = Tabs.Combat:CreateSlider ("u_max",  { Title = "Max targets / swing", Min = 1, Max = 12, Rounding = 0, Default = 5 })
+local u_sps    = Tabs.Combat:CreateSlider ("u_sps",  { Title = "Swings per second", Min = 5, Max = 60, Rounding = 0, Default = 30 })
+local u_burst  = Tabs.Combat:CreateSlider ("u_burst",{ Title = "Bursts per swing", Min = 1, Max = 4, Rounding = 0, Default = 2 })
+local u_gap    = Tabs.Combat:CreateSlider ("u_gap",  { Title = "Gap in burst (s)", Min = 0.0, Max = 0.06, Rounding = 3, Default = 0.010 })
+local u_retg   = Tabs.Combat:CreateToggle("u_retg", { Title = "Retarget every burst", Default = true })
+local u_ignF   = Tabs.Combat:CreateToggle("u_ignF", { Title = "Ignore Roblox friends", Default = true })
+local u_ignT   = Tabs.Combat:CreateToggle("u_ignT", { Title = "Ignore same team/tribe", Default = true })
+local u_wlStr  = Tabs.Combat:CreateInput ("u_wlStr",{ Title = "Whitelist names (comma)", Default = "" })
+
+-- swing helper (пытаемся через твою swingtool, иначе напрямую)
+local function sendSwing(ids)
+    if type(ids) ~= "table" then ids = { ids } end
+    local ok = false
+    if typeof(swingtool) == "function" then ok = pcall(function() swingtool(ids) end) end
+    if (not ok) and packets and packets.SwingTool and packets.SwingTool.send then
+        pcall(function() packets.SwingTool.send(ids) end)
+    end
+end
+
+-- root
+local root
+local function ensureRoot()
+    local ch = LP.Character or LP.CharacterAdded:Wait()
+    root = ch:WaitForChild("HumanoidRootPart")
+end
+ensureRoot()
+LP.CharacterAdded:Connect(function() task.defer(ensureRoot) end)
+
+-- helpers: friends / whitelist / same team
+local IsFriend, WL = {}, {}
+local function rebuildWL(s)
+    WL = {}
+    for name in tostring(s or ""):gmatch("([^,%s]+)") do
+        WL[name:lower()] = true
+    end
+end
+rebuildWL(u_wlStr.Value)
+u_wlStr:OnChanged(rebuildWL)
+
+local function refreshFriends()
+    table.clear(IsFriend)
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then
+            local ok, f = pcall(function() return LP:IsFriendsWith(p.UserId) end)
+            IsFriend[p] = ok and f or false
+        end
+    end
+end
+refreshFriends()
+Players.PlayerAdded:Connect(function() task.defer(refreshFriends) end)
+Players.PlayerRemoving:Connect(function(p) IsFriend[p] = nil end)
+
+local function sameTeamOrTribe(p)
+    if not u_ignT.Value then return false end
+    if p.Team and LP.Team and p.Team == LP.Team then return true end
+    -- Часто игры ставят атрибут Tribe/Clan/TeamName на модели/игрока
+    local function attrOf(inst, k)
+        local ok, v = pcall(function() return inst:GetAttribute(k) end)
+        return ok and v or nil
+    end
+    local a1 = attrOf(p, "Tribe") or attrOf(p, "Clan") or attrOf(p, "TeamName")
+    local a2 = attrOf(LP, "Tribe") or attrOf(LP, "Clan") or attrOf(LP, "TeamName")
+    return (a1 and a2 and a1 == a2) or false
+end
+
+-- где лежит сущность игрока в мире
+local function playerFolder(name)
+    local wf = workspace:FindFirstChild("Players")
+    return wf and wf:FindFirstChild(name) or nil
+end
+
+-- быстрый сбор целей
+local function collectTargets(R, maxN)
+    local myPos = root and root.Position
+    if not myPos then return {} end
+    local out = {}
+    for _,p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then
+            local lname = (p.Name or ""):lower()
+            if not WL[lname]
+               and not (u_ignF.Value and IsFriend[p])
+               and not sameTeamOrTribe(p) then
+                local pf = playerFolder(p.Name)
+                if pf then
+                    local hrp = pf:FindFirstChild("HumanoidRootPart")
+                    local eid = pf:GetAttribute("EntityID")
+                    if hrp and eid then
+                        local d = (hrp.Position - myPos).Magnitude
+                        if d <= R then
+                            out[#out+1] = { eid = eid, dist = d }
+                        end
+                    end
+                end
+            end
+        end
+    end
+    if #out > 1 then table.sort(out, function(a,b) return a.dist < b.dist end) end
+    if #out > maxN then
+        local t = {}
+        for i=1,maxN do t[i] = out[i] end
+        return t
+    end
+    return out
+end
+
+-- раннер: экстремально плотная отправка
+task.spawn(function()
+    while true do
+        if not (u_on.Value and root) then
+            task.wait(0.12)
+        else
+            local sps   = math.max(1, math.floor(u_sps.Value))      -- свингов/сек
+            local dt    = 1 / sps
+            local R     = u_rng.Value
+            local maxN  = math.max(1, math.floor(u_max.Value))
+            local bursts= math.max(1, math.floor(u_burst.Value))
+            local gap   = u_gap.Value
+
+            -- одна «итерация свинга»
+            local pack = collectTargets(R, maxN)
+            if #pack > 0 then
+                local ids = {}
+                for i=1,#pack do ids[i] = pack[i].eid end
+                sendSwing(ids)
+
+                -- бурсты (ретаргет/повтор)
+                for b=2,bursts do
+                    if u_retg.Value then
+                        pack = collectTargets(R, maxN)
+                        if #pack == 0 then break end
+                        table.clear(ids)
+                        for i=1,#pack do ids[i] = pack[i].eid end
+                    end
+                    if gap > 0 then task.wait(gap) end
+                    sendSwing(ids)
+                end
+            end
+
+            task.wait(dt)
+        end
+    end
+end)
 
 
 -- ========= [ Finish / Autoload ] =========
