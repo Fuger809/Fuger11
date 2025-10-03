@@ -1450,6 +1450,137 @@ end
 tr_enable:OnChanged(function(v) if v then startTraderESP() else stopTraderESP() end end)
 if tr_enable.Value then startTraderESP() end
 
+-- ========= [ TAB: Portable (cross-PC export/import of flags + route) ] =========
+Tabs.Portable = Window:AddTab({ Title = "Portable", Icon = "share" })
+
+local function _route_to_arr()
+    return (_G.__ROUTE and ((_G.__ROUTE.points and encodeRoute(_G.__ROUTE.points)) or {})) or {}
+end
+
+local function _route_from_arr(arr)
+    if not _G.__ROUTE then return false, "no route obj" end
+    local pts = decodeRoute(arr or {})
+    table.clear(_G.__ROUTE.points)
+    if _G.__ROUTE._redraw and _G.__ROUTE._redraw.clearDots then _G.__ROUTE._redraw.clearDots() end
+    for _,p in ipairs(pts) do
+        table.insert(_G.__ROUTE.points, p)
+        if _G.__ROUTE._redraw and _G.__ROUTE._redraw.dot then
+            _G.__ROUTE._redraw.dot(Color3.fromRGB(255,230,80), p.pos, 0.7)
+        end
+    end
+    if _G.__ROUTE._redraw and _G.__ROUTE._redraw.redrawLines then _G.__ROUTE._redraw.redrawLines() end
+    return true
+end
+
+local function _flags_shallow_copy()
+    local out = {}
+    local F = (Library and Library.Flags) or {}
+    for k,v in pairs(F) do
+        -- Только простые типы (boolean/number/string) — этого хватает для всех контролов
+        local t = typeof(v)
+        if t == "boolean" or t == "number" or t == "string" then
+            out[k] = v
+        end
+    end
+    return out
+end
+
+local function _flags_apply(tbl)
+    if type(tbl) ~= "table" then return end
+    local Opts = (Library and Library.Options) or {}
+    local F    = (Library and Library.Flags)   or {}
+
+    -- Пытаемся ставить через контролы (если есть SetValue), иначе — напрямую во Flags
+    for key,val in pairs(tbl) do
+        local opt = Opts[key]
+        if opt and opt.SetValue then
+            pcall(function() opt:SetValue(val) end)
+        else
+            F[key] = val
+        end
+    end
+end
+
+-- Единый пакет: { flags = {..}, route = [..] }
+local function _portable_export()
+    local pkg = { flags = _flags_shallow_copy(), route = _route_to_arr() }
+    local ok, json = pcall(function() return HttpService:JSONEncode(pkg) end)
+    return ok and json or nil
+end
+
+local function _portable_import(json)
+    if type(json) ~= "string" or json == "" then return false, "empty" end
+    local ok, pkg = pcall(function() return HttpService:JSONDecode(json) end)
+    if not ok or type(pkg) ~= "table" then return false, "bad json" end
+
+    -- Применяем флаги
+    if type(pkg.flags) == "table" then _flags_apply(pkg.flags) end
+
+    -- Применяем маршрут
+    if type(pkg.route) == "table" then
+        local ok2, err2 = _route_from_arr(pkg.route)
+        if not ok2 then return false, "route import failed: "..tostring(err2) end
+    end
+
+    -- Сохраним автосейв маршрута, чтобы он подхватился после перезапуска
+    pcall(function()
+        if _G.__ROUTE and _G.__ROUTE.points then
+            Route_SaveToFile("FluentScriptHub/specific-game/_route_autosave.json", _G.__ROUTE.points)
+        end
+    end)
+
+    return true
+end
+
+local portable_str = ""
+local portable_input = Tabs.Portable:AddInput("portable_json", {
+    Title = "Portable JSON",
+    Default = "",
+    Placeholder = "Экспорт здесь появится, импорт — вставь сюда"
+})
+portable_input:OnChanged(function(v) portable_str = tostring(v or "") end)
+
+Tabs.Portable:CreateButton({
+    Title = "Export (copy all to clipboard)",
+    Callback = function()
+        local s = _portable_export()
+        if not s then
+            Library:Notify{ Title="Portable", Content="Export failed", Duration=3 }
+            return
+        end
+        if setclipboard then
+            pcall(setclipboard, s)
+            Library:Notify{ Title="Portable", Content="Copied to clipboard!", Duration=3 }
+        else
+            portable_input:SetValue(s)
+            Library:Notify{ Title="Portable", Content="No clipboard — placed into input", Duration=4 }
+        end
+    end
+})
+
+Tabs.Portable:CreateButton({
+    Title = "Import from input (apply flags + route)",
+    Callback = function()
+        local ok, err = _portable_import(portable_str)
+        if ok then
+            Library:Notify{ Title="Portable", Content="Imported & applied (flags + route)", Duration=4 }
+        else
+            Library:Notify{ Title="Portable", Content="Import failed: "..tostring(err), Duration=5 }
+        end
+    end
+})
+
+Tabs.Portable:CreateButton({
+    Title = "Fill input from CURRENT (view/edit)",
+    Callback = function()
+        local s = _portable_export() or ""
+        portable_str = s
+        portable_input:SetValue(s)
+        Library:Notify{ Title="Portable", Content="Current state → input", Duration=2 }
+    end
+})
+
+
 -- ========= [ Finish / Autoload ] =========
 Window:SelectTab(1)
 Library:Notify{ Title="Fuger Hub", Content="Loaded: Configs + Survival + Gold + Route + Farming + Heal + Combat", Duration=6 }
