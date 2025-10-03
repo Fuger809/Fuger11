@@ -59,15 +59,6 @@ SaveManager:SetFolder("FluentScriptHub/specific-game")
 InterfaceManager:BuildInterfaceSection(Tabs.Settings)
 SaveManager:BuildConfigSection(Tabs.Settings)
 
--- [ВАЖНО] Создаём папки для любых записей (ПК, телефон, эмулятор)
-local function ensureFolders()
-    if makefolder then
-        pcall(function() makefolder("FluentScriptHub") end)
-        pcall(function() makefolder("FluentScriptHub/specific-game") end)
-    end
-end
-ensureFolders()
-
 -- ========= [ Helpers ] =========
 local function sanitize(name)
     name = tostring(name or ""):gsub("[%c\\/:*?\"<>|]+",""):gsub("^%s+",""):gsub("%s+$","")
@@ -201,7 +192,6 @@ cfgInput:OnChanged(function(v) cfgName = sanitize(v) end)
 Tabs.Configs:CreateButton({
     Title = "Quick Save",
     Callback = function()
-        ensureFolders()
         local n = sanitize(cfgName)
         pcall(function() SaveManager:Save(n) end)
         Route_SaveToFile(routePath(n), (_G.__ROUTE and _G.__ROUTE.points) or {})
@@ -304,196 +294,6 @@ do
     })
 end
 
--- ==== GOLD FULL CONFIG (flags + route с паузами) ====
-do
-    local GOLDCFG_NAME = "gold"
-    local GOLDCFG_PATH = "FluentScriptHub/specific-game/"..GOLDCFG_NAME..".fullcfg.json"
-    local GOLDCFG_AUTO = "FluentScriptHub/specific-game/_autoload_gold_full.txt"
-    local ROUTE_AUTOSAVE_PATH = "FluentScriptHub/specific-game/_route_autosave.json"
-
-    local function gold_flags_copy()
-        local out, F = {}, (Library and Library.Flags) or {}
-        for k,v in pairs(F) do
-            local t = typeof(v)
-            if t=="boolean" or t=="number" or t=="string" then out[k]=v end
-        end
-        return out
-    end
-    local function gold_flags_apply(tbl)
-        if type(tbl)~="table" then return end
-        local Opts = (Library and Library.Options) or {}
-        local F    = (Library and Library.Flags) or {}
-        for k,v in pairs(tbl) do
-            local opt = Opts[k]
-            if opt and opt.SetValue then pcall(function() opt:SetValue(v) end) else F[k]=v end
-        end
-    end
-
-    local function gold_route_to_array()
-        local arr, pts = {}, (_G.__ROUTE and _G.__ROUTE.points) or {}
-        for i,p in ipairs(pts) do
-            arr[i] = {
-                x=p.pos.X, y=p.pos.Y, z=p.pos.Z,
-                wait = (p.wait and p.wait>0) and p.wait or 0,
-                js = p.jump_start or false,
-                je = p.jump_end   or false
-            }
-        end
-        return arr
-    end
-    local function gold_apply_route_array(arr)
-        if not _G.__ROUTE then return false end
-        local R = _G.__ROUTE
-        local rd = R._redraw
-        if rd and rd.clearDots then rd.clearDots() end
-        table.clear(R.points)
-        for _,r in ipairs(arr or {}) do
-            local pt = { pos = Vector3.new(r.x, r.y, r.z) }
-            if (tonumber(r.wait) or 0) > 0 then pt.wait = tonumber(r.wait) end
-            if r.js then pt.jump_start = true end
-            if r.je then pt.jump_end   = true end
-            table.insert(R.points, pt)
-            if rd and rd.dot then
-                local col = (pt.wait and pt.wait>0) and Color3.fromRGB(230,75,75) or Color3.fromRGB(255,230,80)
-                rd.dot(col, pt.pos, 0.7)
-            end
-        end
-        if rd and rd.redrawLines then rd.redrawLines() end
-        return true
-    end
-
-    local function gold_save()
-        ensureFolders()
-        local pkg = { flags = gold_flags_copy(), route = gold_route_to_array() }
-        local ok, json = pcall(function() return HttpService:JSONEncode(pkg) end)
-        if not ok or not writefile then return false end
-        local ok2 = pcall(writefile, GOLDCFG_PATH, json)
-        pcall(function()
-            local rjson = HttpService:JSONEncode(pkg.route or {})
-            writefile(ROUTE_AUTOSAVE_PATH, rjson)
-        end)
-        return ok2 == true or ok2 == nil
-    end
-
-    local function gold_load()
-        if not (isfile and readfile) or not isfile(GOLDCFG_PATH) then return false end
-        local ok, json = pcall(readfile, GOLDCFG_PATH); if not ok then return false end
-        local ok2, pkg = pcall(function() return HttpService:JSONDecode(json) end); if not ok2 then return false end
-
-        if type(pkg.flags)=="table" then gold_flags_apply(pkg.flags) end
-
-        if type(pkg.route)=="table" then
-            pcall(function()
-                local rjson = HttpService:JSONEncode(pkg.route)
-                writefile(ROUTE_AUTOSAVE_PATH, rjson)
-            end)
-            if _G.__ROUTE then
-                gold_apply_route_array(pkg.route)
-            end
-        end
-        return true
-    end
-
-    local function gold_set_autoload(on)
-        ensureFolders()
-        if not writefile then return end
-        pcall(writefile, GOLDCFG_AUTO, on and "1" or "")
-    end
-    local function gold_should_autoload()
-        return (isfile and readfile and isfile(GOLDCFG_AUTO) and (readfile(GOLDCFG_AUTO) or "") ~= "")
-    end
-
-    -- --- Export/Import через текст (для переноса между устройствами) ---
-    local gold_str_box = ""
-    local gold_input = Tabs.Configs:AddInput("gold_cfg_text", {
-        Title = "GOLD cfg JSON (для импорта/экспорта)",
-        Default = "",
-        Placeholder = "сюда вставь/получи длинный JSON (flags + route с wait)"
-    })
-    gold_input:OnChanged(function(v) gold_str_box = tostring(v or "") end)
-
-    local function gold_export_string()
-        if (isfile and readfile) and isfile(GOLDCFG_PATH) then
-            local ok,json = pcall(readfile, GOLDCFG_PATH)
-            if ok then return json end
-        end
-        -- если файла нет — соберём из текущего состояния
-        local pkg = { flags = gold_flags_copy(), route = gold_route_to_array() }
-        local ok,j = pcall(function() return HttpService:JSONEncode(pkg) end)
-        return ok and j or "{}"
-    end
-
-    local function gold_import_string(str)
-        if type(str)~="string" or str=="" then return false,"empty" end
-        local ok,pkg = pcall(function() return HttpService:JSONDecode(str) end)
-        if not ok or type(pkg)~="table" then return false,"bad json" end
-        gold_flags_apply(pkg.flags or {})
-        ensureFolders()
-        pcall(function()
-            writefile(GOLDCFG_PATH, HttpService:JSONEncode({ flags=pkg.flags or {}, route=pkg.route or {} }))
-            writefile(ROUTE_AUTOSAVE_PATH, HttpService:JSONEncode(pkg.route or {}))
-        end)
-        if _G.__ROUTE and type(pkg.route)=="table" then
-            gold_apply_route_array(pkg.route)
-        end
-        return true
-    end
-
-    Tabs.Configs:CreateButton({
-        Title = "Save GOLD cfg (flags + route)",
-        Callback = function()
-            local ok = gold_save()
-            Library:Notify{ Title="GOLD cfg", Content = ok and "Saved" or "Save failed", Duration=3 }
-        end
-    })
-    Tabs.Configs:CreateButton({
-        Title = "Load GOLD cfg",
-        Callback = function()
-            local ok = gold_load()
-            Library:Notify{ Title="GOLD cfg", Content = ok and "Loaded" or "Load failed / not found", Duration=3 }
-        end
-    })
-    Tabs.Configs:CreateButton({
-        Title = "Export GOLD cfg to INPUT",
-        Callback = function()
-            local s = gold_export_string()
-            gold_str_box = s
-            gold_input:SetValue(s)
-            if setclipboard then pcall(setclipboard, s) end
-            Library:Notify{ Title="GOLD cfg", Content="Экспортировано в поле (и скопировано в буфер, если доступен)", Duration=3 }
-        end
-    })
-    Tabs.Configs:CreateButton({
-        Title = "Import GOLD cfg from INPUT",
-        Callback = function()
-            local ok,err = gold_import_string(gold_str_box)
-            Library:Notify{ Title="GOLD cfg", Content = ok and "Импортировано" or ("Импорт не удался: "..tostring(err)), Duration=3 }
-        end
-    })
-    local gold_auto_toggle = Tabs.Configs:CreateToggle("gold_autoload", { Title="Auto load GOLD cfg", Default=true })
-    gold_auto_toggle:OnChanged(function(v)
-        gold_set_autoload(v)
-        Library:Notify{ Title="GOLD cfg", Content = v and "Autoload ON" or "Autoload OFF", Duration=2 }
-    end)
-
-    -- Автозагрузка при старте:
-    task.spawn(function()
-        if not gold_should_autoload() then return end
-        if (isfile and readfile and isfile(GOLDCFG_PATH)) then
-            local ok,json = pcall(readfile, GOLDCFG_PATH)
-            local ok2,pkg = ok and pcall(function() return HttpService:JSONDecode(json) end) or false, nil
-            if ok2 and type(pkg)=="table" then
-                gold_flags_apply(pkg.flags or {})
-                pcall(function() writefile(ROUTE_AUTOSAVE_PATH, HttpService:JSONEncode(pkg.route or {})) end)
-                local t0 = tick()
-                while not _G.__ROUTE and tick()-t0 < 10 do task.wait(0.1) end
-                if _G.__ROUTE and type(pkg.route)=="table" then gold_apply_route_array(pkg.route) end
-                Library:Notify{ Title="GOLD cfg", Content="Autoloaded GOLD cfg (with waits)", Duration=3 }
-            end
-        end
-    end)
-end
-
 -- ========= [ TAB: Survival (Auto-Eat) ] =========
 Tabs.Survival = Window:AddTab({ Title="Survival", Icon="apple" })
 local ae_toggle = Tabs.Survival:CreateToggle("ae_toggle", { Title="Auto Eat (Hunger)", Default=false })
@@ -570,6 +370,7 @@ do
     local br_tick     = BreakTab:CreateSlider("br_tick",     { Title = "Scan interval (s)", Min = 0.03, Max = 0.40, Rounding = 2, Default = 0.10 })
     local br_onlyRes  = BreakTab:CreateToggle("br_onlyres",  { Title = "Scan only workspace.Resources", Default = true })
 
+    -- Новые — мульти-удар
     local br_swings   = BreakTab:CreateSlider("br_swings",   { Title = "Swings per tick", Min = 1, Max = 4, Rounding = 0, Default = 2 })
     local br_gap      = BreakTab:CreateSlider("br_gap",      { Title = "Gap between swings (s)", Min = 0.00, Max = 0.20, Rounding = 2, Default = 0.04 })
     local br_retarget = BreakTab:CreateToggle("br_retarget", { Title = "Retarget each swing", Default = false })
@@ -583,6 +384,7 @@ do
     local br_black   = BreakTab:CreateToggle("br_black",  { Title = "Use selection as Blacklist (else Whitelist/All)", Default = false })
     local br_list    = BreakTab:CreateDropdown("br_list", { Title = "Targets (multi, optional)", Values = KNOWN_TARGETS, Multi = true, Default = {} })
 
+    -- быстрый вызов свинга
     local function sendSwing(ids)
         if type(ids) ~= "table" then ids = { ids } end
         local ok = false
@@ -592,6 +394,9 @@ do
         end
     end
 
+    ----------------------------------------------------------------
+    -- КЕШ: следим за папками и держим лёгкий список
+    ----------------------------------------------------------------
     local cache = {}  -- [instance] = {eid=<number>, getPos=<fn>, name=<string>}
     local watched, conns = {}, {}
 
@@ -641,6 +446,9 @@ do
         refreshFolders()
     end)
 
+    ----------------------------------------------------------------
+    -- Селектор целей
+    ----------------------------------------------------------------
     local selSet, useBlack = nil, false
     local function compileSelector()
         local val = br_list.Value
@@ -653,12 +461,16 @@ do
     br_list:OnChanged(compileSelector)
     br_black:OnChanged(function(v) useBlack = v end)
 
+    ----------------------------------------------------------------
+    -- Раннер
+    ----------------------------------------------------------------
     task.spawn(function()
         while true do
             if br_auto.Value and root and root.Parent then
                 local range   = br_range.Value
                 local maxHit  = br_max.Value
 
+                -- Собираем и частично ограничиваем кандидатов
                 local candidates = {}
                 local myPos = root.Position
                 for inst, info in pairs(cache) do
@@ -671,7 +483,7 @@ do
                                 local inSel = selSet[string.lower(info.name or "")]
                                 pass = (useBlack and (not inSel)) or ((not useBlack) and inSel)
                             elseif useBlack then
-                                pass = true
+                                pass = true -- пустой blacklist => ломаем всё
                             end
                             if pass then
                                 info.dist = d
@@ -686,15 +498,18 @@ do
                     table.sort(candidates, function(a,b) return a.dist < b.dist end)
                 end
 
+                -- первичный пакет целей
                 local ids = {}
                 for i = 1, math.min(maxHit, #candidates) do
                     ids[#ids+1] = candidates[i].eid
                 end
 
+                -- мульти-удар за тик
                 local swings = math.max(1, math.floor(br_swings.Value))
                 if #ids > 0 then
                     for s = 1, swings do
                         if br_retarget.Value and s > 1 then
+                            -- быстрый ретаргет: обновим дистанции и пересоберём ids
                             myPos = root.Position
                             for j = 1, #candidates do
                                 local c = candidates[j]
@@ -724,6 +539,7 @@ do
     end)
 end
 
+
 -- ========= [ TAB: Route (плавный подъём по Y как в Movement, без автопрыжка) ] =========
 Tabs.Route = Window:AddTab({ Title = "Route", Icon = "route" })
 
@@ -734,6 +550,7 @@ local R_click   = Tabs.Route:CreateToggle("r_click",   { Title="Add points by mo
 local R_light   = Tabs.Route:CreateToggle("r_light",   { Title="Lightweight visuals", Default=true })
 local R_maxDots = Tabs.Route:CreateSlider("r_maxdots", { Title="Max dots on screen", Min=50, Max=800, Rounding=0, Default=300 })
 
+-- НОВОЕ: параметры плавного подъёма
 local R_liftY   = Tabs.Route:CreateSlider("r_lifty",   { Title="Base lift above path (studs)", Min=0, Max=12, Rounding=1, Default=1.5 })
 local R_yGain   = Tabs.Route:CreateSlider("r_ygain",   { Title="Vertical gain (responsiveness)", Min=0.5, Max=8, Rounding=1, Default=2.6 })
 local R_yMax    = Tabs.Route:CreateSlider("r_ymax",    { Title="Max vertical speed", Min=2, Max=25, Rounding=0, Default=10 })
@@ -795,6 +612,7 @@ local function pushPoint(pos,flags)
     if not Route.recording then redrawLines() end
 end
 
+-- === BV для follow (с мягкой вертикалью) ===
 local ROUTE_BV_NAME="_ROUTE_BV"
 local function getRouteBV() return root and root:FindFirstChild(ROUTE_BV_NAME) or nil end
 local function ensureRouteBV()
@@ -802,7 +620,7 @@ local function ensureRouteBV()
     local bv=getRouteBV()
     if not bv then
         bv=Instance.new("BodyVelocity"); bv.Name=ROUTE_BV_NAME
-        bv.MaxForce = Vector3.new(1e9, 1e5, 1e9)
+        bv.MaxForce = Vector3.new(1e9, 1e5, 1e9) -- умеренная сила по Y
         bv.Velocity = Vector3.new()
         bv.Parent   = root
     end
@@ -811,6 +629,7 @@ end
 local function stopRouteBV() local bv=getRouteBV(); if bv then bv.Velocity=Vector3.new() end end
 local function killRouteBV() local bv=getRouteBV(); if bv then bv:Destroy() end end
 
+-- клик-точки
 local UIS_click = game:GetService("UserInputService")
 local mouse = plr:GetMouse()
 local rayParams = RaycastParams.new(); rayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -833,6 +652,7 @@ local function startClickAdd()
     end)
 end
 
+-- ===== Record =====
 function _ROUTE_startRecord()
     ensureChar()
     if Route.recording or Route.running then return end
@@ -860,6 +680,7 @@ function _ROUTE_startRecord()
         if not Route.recording then return end
         local cur = root.Position
 
+        -- idle -> WAIT
         local vel    = root.AssemblyLinearVelocity or Vector3.zero
         local planar = Vector3.new(vel.X,0,vel.Z).Magnitude
         local moving = hum.MoveDirection.Magnitude > 0.10
@@ -922,6 +743,7 @@ function _ROUTE_stopRecord()
     pcall(function() Route_SaveToFile(ROUTE_AUTOSAVE, Route.points) end)
 end
 
+-- ===== Follow (плавный подъём) =====
 local function followSeg(p1, p2)
     local bv=ensureRouteBV(); if not bv then return false end
     local speed   = (R_spd and R_spd.Value) or 20
@@ -933,16 +755,19 @@ local function followSeg(p1, p2)
         if not (root and root.Parent) then ensureChar(); if not (root and root.Parent) then break end end
         local cur = root.Position
 
+        -- Планарное ведение по XZ
         local planar = Vector3.new(p2.X - cur.X, 0, p2.Z - cur.Z)
         local d = planar.Magnitude
         local vPlan = (d>0 and planar.Unit or Vector3.new())*speed
 
+        -- Плавная вертикаль: цель = высота точки + базовый лифт
         local wantY   = p2.Y + ((R_liftY and R_liftY.Value) or 0)
         local err     = wantY - cur.Y
         local targetV = math.clamp(err * ((R_yGain and R_yGain.Value) or 2.6),
                                    -((R_yMax and R_yMax.Value) or 10),
                                    ((R_yMax and R_yMax.Value) or 10))
 
+        -- сглаживаем (инерция), 0 — без сглаживания, ближе к 1 — плавнее
         local damp    = (R_yDamp and R_yDamp.Value) or 0.55
         Route._vy     = Route._vy or 0
         Route._vy     = Route._vy + (targetV - Route._vy) * (1 - damp)
@@ -1012,6 +837,7 @@ Tabs.Route:CreateButton({
 R_loop:OnChanged(redrawLines)
 R_click:OnChanged(function() startClickAdd(); ui(R_click.Value and "Click-to-add: ON" or "Click-to-add: OFF") end)
 startClickAdd()
+
 
 -- ========= [ TAB: Auto Loot ] =========
 Tabs.Loot = Window:AddTab({ Title = "Auto Loot", Icon = "package" })
@@ -1169,7 +995,7 @@ local NAME_HINTS = {
     "stone","node","ore","iron","gold","emerald","magnetite","adurite","crystal",
     "ice","cave","shelly","chest","hut","house","raft","boat"
 }
-local function isBoogaEnvPart(p)
+local function isBoogaEnvPart(p: BasePart): boolean
     if not p or not p.Parent or not p.CanCollide then return false end
     if p:IsDescendantOf(plr.Character) then return false end
     if p.Parent:FindFirstChildOfClass("Humanoid") then return false end
@@ -1184,7 +1010,7 @@ local function isBoogaEnvPart(p)
 end
 
 local activeNCC = {}  -- [envPart] = { [charPart] = NCC }
-local function addNoCollide(envPart)
+local function addNoCollide(envPart: BasePart)
     if not envPart or not envPart.Parent then return end
     local perChar = activeNCC[envPart]; if not perChar then perChar = {}; activeNCC[envPart] = perChar end
     for _,cp in ipairs(getCharParts()) do
@@ -1196,7 +1022,7 @@ local function addNoCollide(envPart)
         end
     end
 end
-local function removeNoCollideFor(envPart)
+local function removeNoCollideFor(envPart: BasePart)
     local perChar = activeNCC[envPart]
     if perChar then for _,ncc in pairs(perChar) do if ncc then ncc:Destroy() end end; activeNCC[envPart] = nil end
 end
@@ -1206,7 +1032,7 @@ plr.CharacterAdded:Connect(function() task.defer(clearAllNCC) end)
 local overlap = OverlapParams.new()
 overlap.FilterType = Enum.RaycastFilterType.Exclude
 overlap.FilterDescendantsInstances = { plr.Character }
-local function getNearBoogaParts(origin, radius, maxCount)
+local function getNearBoogaParts(origin: Vector3, radius: number, maxCount: number)
     local res = {}
     local hits = workspace:GetPartBoundsInRadius(origin, radius, overlap)
     if not hits then return res end
@@ -1233,27 +1059,33 @@ task.spawn(function()
     end
 end)
 
+
+
 -- ========= [ TAB: Movement (Slope / Auto Climb + 360°) ] =========
 local UIS2 = game:GetService("UserInputService")
 local LRun = game:GetService("RunService")
 
 local MoveTab = Window:AddTab({ Title = "Movement", Icon = "mountain" })
 
+-- базовые настройки
 local mv_on        = MoveTab:CreateToggle("mv_on",        { Title = "Slope / Auto Climb (BV)", Default = false })
 local mv_speed     = MoveTab:CreateSlider("mv_speed",     { Title = "Speed", Min = 8, Max = 40, Rounding = 1, Default = 20 })
 local mv_boost     = MoveTab:CreateToggle("mv_boost",     { Title = "Shift = Boost (+40%)", Default = true })
 local mv_jumphelp  = MoveTab:CreateToggle("mv_jumphelp",  { Title = "Auto Jump on slopes", Default = true })
 local mv_sidestep  = MoveTab:CreateToggle("mv_sidestep",  { Title = "Side step if blocked", Default = true })
 
+-- зонды/анти-застревание
 local mv_probeLen  = MoveTab:CreateSlider("mv_probel",    { Title = "Wall probe length", Min = 4, Max = 12, Rounding = 1, Default = 7 })
 local mv_probeH    = MoveTab:CreateSlider("mv_probeh",    { Title = "Probe height", Min = 1.5, Max = 4, Rounding = 1, Default = 2.4 })
 local mv_stuckT    = MoveTab:CreateSlider("mv_stuck",     { Title = "Anti-stuck time (s)", Min = 0.2, Max = 1.2, Rounding = 2, Default = 0.6 })
 local mv_sideStep  = MoveTab:CreateSlider("mv_sidest",    { Title = "Side step power", Min = 2, Max = 7, Rounding = 1, Default = 4.2 })
 
+-- новый режим: 360° подъём (можно спиной/боком)
 local mv_360       = MoveTab:CreateToggle("mv_360",       { Title = "360° climb (спиной/боком тоже)", Default = true })
 local mv_360_fov   = MoveTab:CreateSlider("mv_360_fov",   { Title = "Конус (°) вокруг движения", Min = 30, Max = 360, Rounding = 0, Default = 300 })
 local mv_360_rays  = MoveTab:CreateSlider("mv_360_rays",  { Title = "Кол-во лучей", Min = 4, Max = 24, Rounding = 0, Default = 12 })
 
+-- утилиты BV
 local function getRoot()
     if not root or not root.Parent then
         local c = plr.Character
@@ -1271,7 +1103,7 @@ local function mv_ensureBV()
     if not bv then
         bv = Instance.new("BodyVelocity")
         bv.Name = "_MV_BV"
-        bv.MaxForce = Vector3.new(1e9, 0, 1e9)
+        bv.MaxForce = Vector3.new(1e9, 0, 1e9) -- движемся по XZ, прыжку не мешаем
         bv.Velocity = Vector3.new()
         bv.Parent = rp
     end
@@ -1281,6 +1113,7 @@ local function mv_killBV()
     local bv = mv_getBV(); if bv then bv:Destroy() end
 end
 
+-- рейкасты
 local rayParams_mv = RaycastParams.new()
 rayParams_mv.FilterType = Enum.RaycastFilterType.Exclude
 rayParams_mv.FilterDescendantsInstances = { plr.Character }
@@ -1292,6 +1125,7 @@ local function wallAheadXZ(dir2d)
     local dir3 = Vector3.new(dir2d.X, 0, dir2d.Z).Unit * mv_probeLen.Value
     local hit = workspace:Raycast(origin, dir3, rayParams_mv)
     if not hit then return false end
+    -- вертикальная/крутая поверхность
     return (hit.Normal.Y or 0) < 0.6
 end
 
@@ -1305,7 +1139,7 @@ local function blocked360(dir2d)
     local rays = math.max(4, math.floor(mv_360_rays.Value))
     local span = math.clamp(mv_360_fov.Value, 30, 360)
     if dir2d.Magnitude < 1e-3 then
-        dir2d = Vector3.new(0,0,1)
+        dir2d = Vector3.new(0,0,1) -- базовый вектор, если стоим
         span = 360
     end
     local start = -span/2
@@ -1346,6 +1180,7 @@ local function trySideStep(dir2d)
     bv.Velocity = Vector3.new()
 end
 
+-- основной цикл
 task.spawn(function()
     local lastMoveT = tick()
     while true do
@@ -1357,6 +1192,7 @@ task.spawn(function()
                 speed = speed * 1.4
             end
 
+            -- 360-сканирование препятствий (подъём спиной/боком)
             if mv_360.Value then
                 local scanDir = moving and dir or Vector3.new(0,0,1)
                 if blocked360(scanDir) then
@@ -1370,6 +1206,7 @@ task.spawn(function()
                 end
             end
 
+            -- движение
             local bv = mv_ensureBV()
             if moving then
                 bv.Velocity = dir.Unit * speed
@@ -1378,6 +1215,7 @@ task.spawn(function()
                 bv.Velocity = Vector3.new()
             end
 
+            -- анти-застревание
             if tick() - lastMoveT > mv_stuckT.Value then
                 local d2 = hum.MoveDirection
                 if d2.Magnitude > 0.05 then trySideStep(d2.Unit) end
@@ -1399,6 +1237,7 @@ plr.CharacterAdded:Connect(function()
     end)
 end)
 mv_on:OnChanged(function(v) if not v then mv_killBV() end end)
+
 
 -- =========================
 -- TAB: Follow (следовать за игроком)
@@ -1429,7 +1268,7 @@ local function FLW_ensureBV()
     local bv = FLW_getBV()
     if not bv then
         bv = Instance.new("BodyVelocity"); bv.Name="_FLW_BV"
-        bv.MaxForce = Vector3.new(1e9, 0, 1e9)
+        bv.MaxForce = Vector3.new(1e9, 0, 1e9) -- XZ only
         bv.Velocity = Vector3.new(); bv.Parent = root
     end
     return bv
@@ -1485,6 +1324,7 @@ local tr_highlight = TraderTab:CreateToggle("tr_highlight",  { Title = "Highligh
 local tr_maxdist   = TraderTab:CreateSlider ("tr_maxdist",   { Title = "Max distance (studs)", Min=100, Max=5000, Rounding=0, Default=2000 })
 local tr_notify    = TraderTab:CreateToggle("tr_notify",     { Title = "Notify on spawn/despawn", Default = true })
 
+-- hints
 local TRADER_NAME_HINTS = { "wandering trader","wanderingtrader","trader","wanderer" }
 local function textMatch(s, arr)
     s = string.lower(tostring(s or ""))
@@ -1499,12 +1339,14 @@ local function isTraderModel(m)
         if textMatch(m:GetAttribute("Name"),        TRADER_NAME_HINTS) then return true end
         if textMatch(m:GetAttribute("NPCType"),     TRADER_NAME_HINTS) then return true end
     end
+    -- иногда имя на дочерних объектах
     for _,ch in ipairs(m:GetChildren()) do
         if textMatch(ch.Name, TRADER_NAME_HINTS) then return true end
     end
     return false
 end
 
+-- utils
 local function modelRoot(m)
     return m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
 end
@@ -1514,6 +1356,7 @@ local function prettyName(m)
     return (dn and dn~="") and tostring(dn) or "Wandering Trader"
 end
 
+-- visuals
 local function makeBillboard(adornee)
     local bb = Instance.new("BillboardGui")
     bb.Name = "_ESP_TRADER_BB"; bb.AlwaysOnTop = true
@@ -1540,6 +1383,7 @@ local function ensureHL(model)
     return hl
 end
 
+-- state
 local TR = { map = {}, loop = nil, addConn=nil, remConn=nil }
 
 local function attachTrader(m)
@@ -1547,6 +1391,7 @@ local function attachTrader(m)
     local r = modelRoot(m)
     local bb, tl, hl
 
+    -- если пока нет корневой детали — дождёмся
     if not r then
         local tmpConn
         tmpConn = m.ChildAdded:Connect(function(ch)
@@ -1557,6 +1402,7 @@ local function attachTrader(m)
                 end
             end
         end)
+        -- создадим запись, билборд появится как только найдётся корень
         TR.map[m] = { model=m, root=nil, bb=nil, tl=nil, hl=nil, label=prettyName(m), waitConn=tmpConn, lastTxt="" }
     end
 
@@ -1584,9 +1430,13 @@ end
 
 local function startTraderESP()
     if TR.loop then return end
+
+    -- первичный один-раз скан (легко, но полно)
     for _,inst in ipairs(workspace:GetDescendants()) do
         if inst:IsA("Model") and isTraderModel(inst) then attachTrader(inst) end
     end
+
+    -- глобальные вотчеры: ничего не пропустим
     TR.addConn = workspace.DescendantAdded:Connect(function(inst)
         if inst:IsA("Model") and isTraderModel(inst) then attachTrader(inst) end
     end)
@@ -1594,6 +1444,7 @@ local function startTraderESP()
         if TR.map[inst] then detachTrader(inst) end
     end)
 
+    -- лёгкий апдейт раз в 0.2с
     local acc = 0
     TR.loop = RunService.Heartbeat:Connect(function(dt)
         acc = acc + (dt or 0)
@@ -1610,6 +1461,7 @@ local function startTraderESP()
             if not (rec.model and rec.model.Parent) then
                 detachTrader(m)
             else
+                -- если root появился позже — создадим визуал сейчас
                 if not rec.root then
                     local nr = modelRoot(rec.model)
                     if nr then
@@ -1619,6 +1471,7 @@ local function startTraderESP()
                     end
                 end
                 if rec.root then
+                    -- дистанция/видимость
                     local inRange, txt = true, rec.label
                     if myRoot then
                         local d = (rec.root.Position - myRoot.Position).Magnitude
@@ -1643,6 +1496,121 @@ end
 
 tr_enable:OnChanged(function(v) if v then startTraderESP() else stopTraderESP() end end)
 if tr_enable.Value then startTraderESP() end
+
+
+-- =========================================================
+-- ===============  GOLD FARM: вкладка + кнопки  ===========
+-- =========================================================
+do
+    local GoldTab = Window:AddTab({ Title = "Gold Farm", Icon = "coins" })
+
+    -- 1) если файл существует, берём из него
+    local GOLD_FARM_FILE = "FluentScriptHub/specific-game/gold_farm.route.json"
+
+    -- 2) иначе можно хранить маршрут прямо тут (вставь свой JSON внутрь [[ ... ]]):
+    --    Если не хочешь встраивать — оставь пустым "" и просто положи файл по пути выше.
+    local GOLD_FARM_JSON = [[
+    ]] -- <--- вставь сюда свой ДЛИННЫЙ JSON-маршрут при желании
+
+    local function importRouteFromJsonString(jsonStr)
+        if type(jsonStr) ~= "string" or jsonStr == "" then
+            return false, "empty json"
+        end
+        local ok, t = pcall(function() return HttpService:JSONDecode(jsonStr) end)
+        if not ok or type(t) ~= "table" then
+            return false, "bad json"
+        end
+        if not _G.__ROUTE then
+            return false, "route obj missing"
+        end
+        local points = decodeRoute(t)
+        table.clear(_G.__ROUTE.points)
+        if _G.__ROUTE._redraw and _G.__ROUTE._redraw.clearDots then _G.__ROUTE._redraw.clearDots() end
+        for _,p in ipairs(points) do
+            table.insert(_G.__ROUTE.points, p)
+            if _G.__ROUTE._redraw and _G.__ROUTE._redraw.dot then
+                _G.__ROUTE._redraw.dot(Color3.fromRGB(255,230,80), p.pos, 0.7)
+            end
+        end
+        if _G.__ROUTE._redraw and _G.__ROUTE._redraw.redrawLines then
+            _G.__ROUTE._redraw.redrawLines()
+        end
+        pcall(function() Route_SaveToFile(ROUTE_AUTOSAVE, _G.__ROUTE.points) end)
+        return true
+    end
+
+    local function loadGoldFarm()
+        -- пытаемся из файла
+        if isfile and readfile and isfile(GOLD_FARM_FILE) then
+            local ok, data = pcall(readfile, GOLD_FARM_FILE)
+            if ok and type(data) == "string" and #data > 0 then
+                local ok2, err = importRouteFromJsonString(data)
+                if ok2 then
+                    Library:Notify{ Title="Gold Farm", Content="Маршрут загружен из gold_farm.route.json", Duration=3 }
+                    return true
+                else
+                    Library:Notify{ Title="Gold Farm", Content="Ошибка JSON в файле: "..tostring(err), Duration=4 }
+                    return false
+                end
+            end
+        end
+        -- иначе — из встроенной строки
+        local ok3, err2 = importRouteFromJsonString(GOLD_FARM_JSON)
+        if ok3 then
+            Library:Notify{ Title="Gold Farm", Content="Маршрут загружен из встроенной строки", Duration=3 }
+            return true
+        else
+            Library:Notify{ Title="Gold Farm", Content="Нет файла и пустая встроенная строка. Вставь JSON или создай файл.", Duration=5 }
+            return false
+        end
+    end
+
+    GoldTab:CreateButton({
+        Title   = "Load Gold Farm",
+        Callback= function()
+            loadGoldFarm()
+        end
+    })
+
+    GoldTab:CreateButton({
+        Title   = "Start Follow",
+        Callback= function()
+            if not _G.__ROUTE or #_G.__ROUTE.points < 2 then
+                if not loadGoldFarm() then return end
+            end
+            _ROUTE_startFollow()
+        end
+    })
+
+    GoldTab:CreateButton({
+        Title   = "Stop Follow",
+        Callback= function()
+            _ROUTE_stopFollow()
+        end
+    })
+
+    GoldTab:CreateButton({
+        Title   = "Save as gold_farm.route.json",
+        Callback= function()
+            if writefile then
+                local ok, json = pcall(function() return HttpService:JSONEncode(encodeRoute(_G.__ROUTE.points or {})) end)
+                if ok then
+                    local ok2 = pcall(writefile, GOLD_FARM_FILE, json)
+                    Library:Notify{
+                        Title="Gold Farm",
+                        Content = ok2 and "Сохранено в gold_farm.route.json" or "Не удалось сохранить (writefile?)",
+                        Duration=3
+                    }
+                else
+                    Library:Notify{ Title="Gold Farm", Content="Не удалось закодировать маршрут", Duration=3 }
+                end
+            else
+                Library:Notify{ Title="Gold Farm", Content="writefile недоступен в этом окружении", Duration=4 }
+            end
+        end
+    })
+end
+
 
 -- ========= [ Finish / Autoload ] =========
 Window:SelectTab(1)
