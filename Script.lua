@@ -1315,189 +1315,6 @@ task.spawn(function()
     end
 end)
 
--- ========= [ TAB: ESP — Wandering Trader (event + resilient) ] =========
-local TraderTab = Window:AddTab({ Title = "Trader ESP", Icon = "store" })
-
-local tr_enable    = TraderTab:CreateToggle("tr_esp_enable", { Title = "Enable Trader ESP", Default = true })
-local tr_showbb    = TraderTab:CreateToggle("tr_show_label", { Title = "Show overhead label", Default = true })
-local tr_highlight = TraderTab:CreateToggle("tr_highlight",  { Title = "Highlight model", Default = true })
-local tr_maxdist   = TraderTab:CreateSlider ("tr_maxdist",   { Title = "Max distance (studs)", Min=100, Max=5000, Rounding=0, Default=2000 })
-local tr_notify    = TraderTab:CreateToggle("tr_notify",     { Title = "Notify on spawn/despawn", Default = true })
-
--- hints
-local TRADER_NAME_HINTS = { "wandering trader","wanderingtrader","trader","wanderer" }
-local function textMatch(s, arr)
-    s = string.lower(tostring(s or ""))
-    for i=1,#arr do if string.find(s, arr[i], 1, true) then return true end end
-    return false
-end
-local function isTraderModel(m)
-    if not (m and m:IsA("Model")) then return false end
-    if textMatch(m.Name, TRADER_NAME_HINTS) then return true end
-    if m.GetAttribute then
-        if textMatch(m:GetAttribute("DisplayName"), TRADER_NAME_HINTS) then return true end
-        if textMatch(m:GetAttribute("Name"),        TRADER_NAME_HINTS) then return true end
-        if textMatch(m:GetAttribute("NPCType"),     TRADER_NAME_HINTS) then return true end
-    end
-    -- иногда имя на дочерних объектах
-    for _,ch in ipairs(m:GetChildren()) do
-        if textMatch(ch.Name, TRADER_NAME_HINTS) then return true end
-    end
-    return false
-end
-
--- utils
-local function modelRoot(m)
-    return m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
-end
-local function prettyName(m)
-    local dn
-    if m.GetAttribute then dn = m:GetAttribute("DisplayName") or m:GetAttribute("Name") or m:GetAttribute("NPCType") end
-    return (dn and dn~="") and tostring(dn) or "Wandering Trader"
-end
-
--- visuals
-local function makeBillboard(adornee)
-    local bb = Instance.new("BillboardGui")
-    bb.Name = "_ESP_TRADER_BB"; bb.AlwaysOnTop = true
-    bb.Size = UDim2.fromOffset(180, 26)
-    bb.StudsOffsetWorldSpace = Vector3.new(0,4,0)
-    bb.Adornee = adornee; bb.Parent = adornee
-    local tl = Instance.new("TextLabel")
-    tl.BackgroundTransparency = 1; tl.Size = UDim2.fromScale(1,1)
-    tl.Font = Enum.Font.GothamBold; tl.TextScaled = true
-    tl.TextStrokeTransparency = 0.25; tl.TextColor3 = Color3.fromRGB(255,220,90)
-    tl.Text = "Wandering Trader"; tl.Parent = bb
-    return bb, tl
-end
-local function ensureHL(model)
-    local hl = model:FindFirstChild("_ESP_TRADER_HL")
-    if not hl then
-        hl = Instance.new("Highlight")
-        hl.Name = "_ESP_TRADER_HL"
-        hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-        hl.FillTransparency = 1; hl.OutlineTransparency = 0
-        hl.OutlineColor = Color3.fromRGB(255,220,90)
-        hl.Adornee = model; hl.Parent = model
-    end
-    return hl
-end
-
--- state
-local TR = { map = {}, loop = nil, addConn=nil, remConn=nil }
-
-local function attachTrader(m)
-    if TR.map[m] then return end
-    local r = modelRoot(m)
-    local bb, tl, hl
-
-    -- если пока нет корневой детали — дождёмся
-    if not r then
-        local tmpConn
-        tmpConn = m.ChildAdded:Connect(function(ch)
-            if ch:IsA("BasePart") or ch.Name == "HumanoidRootPart" then
-                r = modelRoot(m)
-                if r and TR.map[m] and TR.map[m].bb then
-                    TR.map[m].bb.Adornee = r
-                end
-            end
-        end)
-        -- создадим запись, билборд появится как только найдётся корень
-        TR.map[m] = { model=m, root=nil, bb=nil, tl=nil, hl=nil, label=prettyName(m), waitConn=tmpConn, lastTxt="" }
-    end
-
-    if r then
-        bb, tl = makeBillboard(r)
-        hl = ensureHL(m)
-        TR.map[m] = { model=m, root=r, bb=bb, tl=tl, hl=hl, label=prettyName(m), waitConn=nil, lastTxt="" }
-    end
-
-    if tr_notify.Value and Library and Library.Notify then
-        Library:Notify{ Title="Trader", Content="Wandering Trader FOUND", Duration=3 }
-    end
-end
-
-local function detachTrader(m)
-    local rec = TR.map[m]; if not rec then return end
-    if rec.waitConn then pcall(function() rec.waitConn:Disconnect() end) end
-    if rec.bb then pcall(function() rec.bb:Destroy() end) end
-    if rec.hl then pcall(function() rec.hl:Destroy() end) end
-    TR.map[m] = nil
-    if tr_notify.Value and Library and Library.Notify then
-        Library:Notify{ Title="Trader", Content="Wandering Trader lost", Duration=2 }
-    end
-end
-
-local function startTraderESP()
-    if TR.loop then return end
-
-    -- первичный один-раз скан (легко, но полно)
-    for _,inst in ipairs(workspace:GetDescendants()) do
-        if inst:IsA("Model") and isTraderModel(inst) then attachTrader(inst) end
-    end
-
-    -- глобальные вотчеры: ничего не пропустим
-    TR.addConn = workspace.DescendantAdded:Connect(function(inst)
-        if inst:IsA("Model") and isTraderModel(inst) then attachTrader(inst) end
-    end)
-    TR.remConn = workspace.DescendantRemoving:Connect(function(inst)
-        if TR.map[inst] then detachTrader(inst) end
-    end)
-
-    -- лёгкий апдейт раз в 0.2с
-    local acc = 0
-    TR.loop = RunService.Heartbeat:Connect(function(dt)
-        acc = acc + (dt or 0)
-        if acc < 0.20 then return end
-        acc = 0
-
-        local enabled = tr_enable.Value
-        local showBB  = tr_showbb.Value
-        local showHL  = tr_highlight.Value
-        local maxD    = tr_maxdist.Value
-
-        local myRoot = plr.Character and plr.Character:FindFirstChild("HumanoidRootPart") or nil
-        for m, rec in pairs(TR.map) do
-            if not (rec.model and rec.model.Parent) then
-                detachTrader(m)
-            else
-                -- если root появился позже — создадим визуал сейчас
-                if not rec.root then
-                    local nr = modelRoot(rec.model)
-                    if nr then
-                        local bb, tl = makeBillboard(nr)
-                        local hl = ensureHL(rec.model)
-                        rec.root, rec.bb, rec.tl, rec.hl = nr, bb, tl, hl
-                    end
-                end
-                if rec.root then
-                    -- дистанция/видимость
-                    local inRange, txt = true, rec.label
-                    if myRoot then
-                        local d = (rec.root.Position - myRoot.Position).Magnitude
-                        inRange = (d <= maxD)
-                        txt = rec.label .. string.format(" (%.0f)", d)
-                    end
-                    if rec.tl and txt ~= rec.lastTxt then rec.tl.Text = txt; rec.lastTxt = txt end
-                    if rec.bb then rec.bb.Enabled = enabled and showBB and inRange end
-                    if rec.hl then rec.hl.Enabled = enabled and showHL and inRange end
-                end
-            end
-        end
-    end)
-end
-
-local function stopTraderESP()
-    if TR.loop   then TR.loop:Disconnect(); TR.loop=nil end
-    if TR.addConn then TR.addConn:Disconnect(); TR.addConn=nil end
-    if TR.remConn then TR.remConn:Disconnect(); TR.remConn=nil end
-    for m,_ in pairs(TR.map) do detachTrader(m) end
-end
-
-tr_enable:OnChanged(function(v) if v then startTraderESP() else stopTraderESP() end end)
-if tr_enable.Value then startTraderESP() end
-
-
 -- ========= [ TAB: Portable (flags + route, mobile-friendly copy/paste) ] =========
 do
     Tabs.Portable = Window:AddTab({ Title = "Portable", Icon = "share" })
@@ -1573,22 +1390,120 @@ do
         local ok, json = pcall(function() return HttpService:JSONEncode(pkg) end)
         return ok and json or nil
     end
-    local function _portable_import(json)
-        if type(json) ~= "string" or json == "" then return false, "empty" end
-        local ok, pkg = pcall(function() return HttpService:JSONDecode(json) end)
-        if not ok or type(pkg) ~= "table" then return false, "bad json" end
-        if type(pkg.flags) == "table" then _flags_apply(pkg.flags) end
-        if type(pkg.route) == "table" then
-            local ok2, err2 = _route_from_arr(pkg.route)
-            if not ok2 then return false, "route import failed: "..tostring(err2) end
-        end
-        pcall(function()
-            if _G.__ROUTE and _G.__ROUTE.points then
-                Route_SaveToFile("FluentScriptHub/specific-game/_route_autosave.json", _G.__ROUTE.points)
-            end
-        end)
-        return true
+
+    -- ====== РОБАСТНЫЙ ИМПОРТЕР (для MuMu/мобилок) ======
+    local function cleanText(s)
+        s = tostring(s or "")
+
+        -- срежем ```json ... ```
+        s = s:gsub("^%s*```[%w_-]*%s*", ""):gsub("%s*```%s*$", "")
+
+        -- уберём BOM и zero-width
+        s = s:gsub("\239\187\191", "")                -- EF BB BF (BOM)
+        s = s:gsub("\226\128[\139\140\141]", "")      -- U+200B/C/D
+
+        -- «умные» кавычки → обычные
+        s = s
+            :gsub("\226\128\156", "\"") -- “
+            :gsub("\226\128\157", "\"") -- ”
+            :gsub("\226\128\152", "'")  -- ‘
+            :gsub("\226\128\153", "'")  -- ’
+
+        -- выкинуть управляющие \0.. кроме \r\n\t
+        s = s:gsub("[\000-\008\011\012\014-\031]", "")
+
+        -- обрезка
+        s = s:match("^%s*(.-)%s*$") or s
+        return s
     end
+    local function jsonTry(txt)
+        return pcall(function() return HttpService:JSONDecode(txt) end)
+    end
+    local function b64decode(data)
+        local b='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+        data = data:gsub("[^"..b.."=]", "")
+        local out, n, pad = {}, 0, 0
+        for i=1,#data do
+            local c = data:sub(i,i)
+            if c == '=' then pad = pad + 1; n = n * 64
+            else n = n * 64 + (b:find(c,1,true)-1) end
+            if (i % 4) == 0 then
+                local a = math.floor(n / 65536) % 256
+                local d = math.floor(n / 256) % 256
+                local e = n % 256
+                out[#out+1] = string.char(a,d,e)
+                n = 0
+            end
+        end
+        local s = table.concat(out)
+        if pad > 0 then s = s:sub(1, #s - pad) end
+        return s
+    end
+
+    local function _portable_import(raw)
+        if type(raw) ~= "string" or raw == "" then return false, "empty" end
+        local s = cleanText(raw)
+
+        -- 1) прямая попытка JSON
+        do
+            local ok, obj = jsonTry(s)
+            if ok and type(obj) == "table" then
+                if obj.flags or obj.route then
+                    if type(obj.flags) == "table" then _flags_apply(obj.flags) end
+                    if type(obj.route) == "table" then
+                        local ok2, err2 = _route_from_arr(obj.route)
+                        if not ok2 then return false, "route import failed: "..tostring(err2) end
+                    end
+                    pcall(function()
+                        if _G.__ROUTE and _G.__ROUTE.points then
+                            Route_SaveToFile("FluentScriptHub/specific-game/_route_autosave.json", _G.__ROUTE.points)
+                        end
+                    end)
+                    return true
+                end
+                -- «только флаги»
+                if obj and not obj[1] then
+                    _flags_apply(obj)
+                    return true
+                end
+            end
+        end
+
+        -- 2) «только маршрут» — массив [...]
+        if s:sub(1,1) == "[" then
+            local okArr, arr = jsonTry(s)
+            if okArr and type(arr) == "table" then
+                local ok2, err2 = _route_from_arr(arr)
+                if not ok2 then return false, "route import failed: "..tostring(err2) end
+                pcall(function()
+                    if _G.__ROUTE and _G.__ROUTE.points then
+                        Route_SaveToFile("FluentScriptHub/specific-game/_route_autosave.json", _G.__ROUTE.points)
+                    end
+                end)
+                return true
+            end
+        end
+
+        -- 3) base64 → json
+        local looksB64 = (#s % 4 == 0) and s:find("^[A-Za-z0-9+/=]+$") ~= nil
+        if looksB64 then
+            local decoded = b64decode(s)
+            local okB, objB = jsonTry(decoded)
+            if okB and type(objB) == "table" then
+                if objB.flags or objB.route then
+                    if type(objB.flags) == "table" then _flags_apply(objB.flags) end
+                    if type(objB.route) == "table" then
+                        local ok2, err2 = _route_from_arr(objB.route)
+                        if not ok2 then return false, "route import failed: "..tostring(err2) end
+                    end
+                    return true
+                end
+            end
+        end
+
+        return false, "bad json"
+    end
+    -- ====== конец «толстого» импортера ======
 
     -- ==== mobile window (big multiline textbox) ====
     local function showMobileBox(title, bodyText, onApply)
