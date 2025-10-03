@@ -92,7 +92,7 @@ local function RouteLock(on)
     return L.active
 end
 
--- ========= [ ROUTE persist (save/load) ] =========
+-- ========= [ ROUTE persist (save/load, перенос между ПК) ] =========
 local function routePath(cfg) return "FluentScriptHub/specific-game/"..sanitize(cfg)..".route.json" end
 local ROUTE_AUTOSAVE = "FluentScriptHub/specific-game/_route_autosave.json"
 
@@ -137,6 +137,7 @@ function Route_LoadFromFile(path, Route, redraw)
         table.insert(Route.points, p)
         if redraw and redraw.dot then redraw.dot(Color3.fromRGB(255,230,80), p.pos, 0.7) end
     end
+    if redraw and redraw.redrawLines then redraw.redrawLines() end
     return true
 end
 
@@ -223,118 +224,69 @@ auto:OnChanged(function(v)
     else pcall(function() SaveManager:DeleteAutoloadConfig() end) end
 end)
 
--- === [ переносимый экспорт/импорт ROUTE — JSON + Base64, устойчивый ] ===
+-- === [ переносимый экспорт/импорт ROUTE (между ПК) ] ===
 do
-    local json = HttpService
-
-    -- base64 (надёжный, с автопаддингом)
-    local b64chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
-    local b64idx = {}; for i=1,#b64chars do b64idx[b64chars:sub(i,i)] = i-1 end
-    local function b64encode(s)
-        local out, t = {}, {}
-        for i=1,#s,3 do
-            local a,b,c = s:byte(i,i+2)
-            local n = (a or 0)<<16 | (b or 0)<<8 | (c or 0)
-            local p1 = (n>>18)&63; local p2 = (n>>12)&63; local p3 = (n>>6)&63; local p4 = n&63
-            t[1]=b64chars:sub(p1+1,p1+1); t[2]=b64chars:sub(p2+1,p2+1)
-            t[3]=(b and b64chars:sub(p3+1,p3+1) or "=")
-            t[4]=(c and b64chars:sub(p4+1,p4+1) or "=")
-            out[#out+1]=table.concat(t)
-        end
-        return table.concat(out)
-    end
-    local function b64decode(s)
-        s = (s or ""):gsub("%s+","")
-        local m = #s % 4; if m ~= 0 then s = s .. string.rep("=", 4 - m) end
-        local out = table.create(math.floor(#s*3/4))
-        local oi = 0
-        for i=1,#s,4 do
-            local a = b64idx[s:sub(i,i)]       or 0
-            local b = b64idx[s:sub(i+1,i+1)]   or 0
-            local cch = s:sub(i+2,i+2); local dch = s:sub(i+3,i+3)
-            local c = (cch ~= "=") and (b64idx[cch] or 0) or nil
-            local d = (dch ~= "=") and (b64idx[dch] or 0) or nil
-            local n = (a<<18) | (b<<12) | ((c or 0)<<6) | (d or 0)
-            local x = (n>>16)&255; local y=(n>>8)&255; local z=n&255
-            oi=oi+1; out[oi]=string.char(x)
-            if c then oi=oi+1; out[oi]=string.char(y) end
-            if d then oi=oi+1; out[oi]=string.char(z) end
-        end
-        return table.concat(out, "", 1, oi)
-    end
-
-    local function Route_ToJSON()
+    local function Route_ToString()
         local arr = encodeRoute((_G.__ROUTE and _G.__ROUTE.points) or {})
-        local ok, s = pcall(function() return json:JSONEncode(arr) end)
-        return ok and s or "[]"
+        local ok, json = pcall(function() return HttpService:JSONEncode(arr) end)
+        return ok and json or "[]"
     end
-
     local function Route_FromString(str)
-        str = tostring(str or ""):gsub("^%s+",""):gsub("%s+$","")
-        if str == "" then return false, "empty" end
-
-        -- принимаем и b64:..., и чистый JSON
-        if str:sub(1,4):lower() == "b64:" then
-            local raw = b64decode(str:sub(5))
-            if not raw or raw == "" then return false, "bad base64" end
-            str = raw
-        end
-
-        local ok, t = pcall(function() return json:JSONDecode(str) end)
+        if type(str) ~= "string" or str == "" then return false, "empty" end
+        local ok, t = pcall(function() return HttpService:JSONDecode(str) end)
         if not ok or type(t) ~= "table" then return false, "bad json" end
         if not _G.__ROUTE then return false, "no route obj" end
-
         local points = decodeRoute(t)
         table.clear(_G.__ROUTE.points)
-        local rd = _G.__ROUTE._redraw
-        if rd and rd.clearDots then rd.clearDots() end
+        if _G.__ROUTE._redraw and _G.__ROUTE._redraw.clearDots then _G.__ROUTE._redraw.clearDots() end
         for _,p in ipairs(points) do
             table.insert(_G.__ROUTE.points, p)
-            if rd and rd.dot then rd.dot(Color3.fromRGB(255,230,80), p.pos, 0.7) end
+            if _G.__ROUTE._redraw and _G.__ROUTE._redraw.dot then
+                _G.__ROUTE._redraw.dot(Color3.fromRGB(255,230,80), p.pos, 0.7)
+            end
         end
-        if rd and rd.redrawLines then rd.redrawLines() end
+        if _G.__ROUTE._redraw and _G.__ROUTE._redraw.redrawLines then
+            _G.__ROUTE._redraw.redrawLines()
+        end
         return true
     end
 
     local routeStr = ""
     local routeInput = Tabs.Configs:AddInput("cfg_route_string", {
-        Title = "Route share string (b64:… or JSON)",
-        Default = "",
-        Placeholder = "сюда вставляй b64:… или чистый JSON"
+        Title="Route JSON (paste here to import)",
+        Default="",
+        Placeholder="сюда вставь длинную строку JSON маршрута"
     })
     routeInput:OnChanged(function(v) routeStr = tostring(v or "") end)
 
     Tabs.Configs:CreateButton({
-        Title = "Fill input from CURRENT route",
-        Callback = function()
-            local s = Route_ToJSON()
-            local b = "b64:" .. b64encode(s)
-            routeStr = b
-            routeInput:SetValue(b)
-            Library:Notify{ Title="Route", Content="Скрипт сгенерил b64-строку (удобно переносить)", Duration=3 }
+        Title="Fill input from CURRENT route",
+        Callback=function()
+            local s = Route_ToString()
+            routeStr = s
+            routeInput:SetValue(s)
+            Library:Notify{ Title="Route", Content="Input filled from current route", Duration=2 }
         end
     })
-
     Tabs.Configs:CreateButton({
-        Title = "Copy CURRENT route to Clipboard",
-        Callback = function()
-            local s = "b64:" .. b64encode(Route_ToJSON())
+        Title="Copy CURRENT route (JSON) to Clipboard",
+        Callback=function()
+            local s = Route_ToString()
             if setclipboard then
                 pcall(setclipboard, s)
-                Library:Notify{ Title="Route", Content="Скопировано в буфер (b64)", Duration=2 }
+                Library:Notify{ Title="Route", Content="Copied to clipboard!", Duration=2 }
             else
-                print("[ROUTE b64]\n"..s)
+                print("[ROUTE JSON]\n"..s)
                 Library:Notify{ Title="Route", Content="setclipboard недоступен — строка в F9", Duration=4 }
             end
         end
     })
-
     Tabs.Configs:CreateButton({
-        Title = "Load route from INPUT",
-        Callback = function()
+        Title="Load route from INPUT (replace current)",
+        Callback=function()
             local ok, err = Route_FromString(routeStr)
             if ok then
-                Library:Notify{ Title="Route", Content="Импорт выполнен", Duration=3 }
+                Library:Notify{ Title="Route", Content="Route loaded from input", Duration=3 }
                 pcall(function() Route_SaveToFile(ROUTE_AUTOSAVE, _G.__ROUTE.points) end)
             else
                 Library:Notify{ Title="Route", Content="Import failed: "..tostring(err), Duration=4 }
@@ -419,7 +371,6 @@ do
     local br_tick     = BreakTab:CreateSlider("br_tick",     { Title = "Scan interval (s)", Min = 0.03, Max = 0.40, Rounding = 2, Default = 0.10 })
     local br_onlyRes  = BreakTab:CreateToggle("br_onlyres",  { Title = "Scan only workspace.Resources", Default = true })
 
-    -- Новые — мульти-удар
     local br_swings   = BreakTab:CreateSlider("br_swings",   { Title = "Swings per tick", Min = 1, Max = 4, Rounding = 0, Default = 2 })
     local br_gap      = BreakTab:CreateSlider("br_gap",      { Title = "Gap between swings (s)", Min = 0.00, Max = 0.20, Rounding = 2, Default = 0.04 })
     local br_retarget = BreakTab:CreateToggle("br_retarget", { Title = "Retarget each swing", Default = false })
@@ -433,7 +384,6 @@ do
     local br_black   = BreakTab:CreateToggle("br_black",  { Title = "Use selection as Blacklist (else Whitelist/All)", Default = false })
     local br_list    = BreakTab:CreateDropdown("br_list", { Title = "Targets (multi, optional)", Values = KNOWN_TARGETS, Multi = true, Default = {} })
 
-    -- быстрый вызов свинга
     local function sendSwing(ids)
         if type(ids) ~= "table" then ids = { ids } end
         local ok = false
@@ -443,10 +393,7 @@ do
         end
     end
 
-    ----------------------------------------------------------------
-    -- КЕШ: следим за папками и держим лёгкий список
-    ----------------------------------------------------------------
-    local cache = {}  -- [instance] = {eid=<number>, getPos=<fn>, name=<string>}
+    local cache = {}
     local watched, conns = {}, {}
 
     local function addModel(inst)
@@ -495,9 +442,6 @@ do
         refreshFolders()
     end)
 
-    ----------------------------------------------------------------
-    -- Селектор целей
-    ----------------------------------------------------------------
     local selSet, useBlack = nil, false
     local function compileSelector()
         local val = br_list.Value
@@ -510,16 +454,12 @@ do
     br_list:OnChanged(compileSelector)
     br_black:OnChanged(function(v) useBlack = v end)
 
-    ----------------------------------------------------------------
-    -- Раннер
-    ----------------------------------------------------------------
     task.spawn(function()
         while true do
             if br_auto.Value and root and root.Parent then
                 local range   = br_range.Value
                 local maxHit  = br_max.Value
 
-                -- Собираем и частично ограничиваем кандидатов
                 local candidates = {}
                 local myPos = root.Position
                 for inst, info in pairs(cache) do
@@ -532,7 +472,7 @@ do
                                 local inSel = selSet[string.lower(info.name or "")]
                                 pass = (useBlack and (not inSel)) or ((not useBlack) and inSel)
                             elseif useBlack then
-                                pass = true -- пустой blacklist => ломаем всё
+                                pass = true
                             end
                             if pass then
                                 info.dist = d
@@ -547,18 +487,15 @@ do
                     table.sort(candidates, function(a,b) return a.dist < b.dist end)
                 end
 
-                -- первичный пакет целей
                 local ids = {}
                 for i = 1, math.min(maxHit, #candidates) do
                     ids[#ids+1] = candidates[i].eid
                 end
 
-                -- мульти-удар за тик
                 local swings = math.max(1, math.floor(br_swings.Value))
                 if #ids > 0 then
                     for s = 1, swings do
                         if br_retarget.Value and s > 1 then
-                            -- быстрый ретаргет: обновим дистанции и пересоберём ids
                             myPos = root.Position
                             for j = 1, #candidates do
                                 local c = candidates[j]
@@ -574,7 +511,6 @@ do
                         end
 
                         sendSwing(ids)
-
                         local g = br_gap.Value
                         if g > 0 then task.wait(g) end
                     end
@@ -588,7 +524,6 @@ do
     end)
 end
 
-
 -- ========= [ TAB: Route (плавный подъём по Y как в Movement, без автопрыжка) ] =========
 Tabs.Route = Window:AddTab({ Title = "Route", Icon = "route" })
 
@@ -599,7 +534,6 @@ local R_click   = Tabs.Route:CreateToggle("r_click",   { Title="Add points by mo
 local R_light   = Tabs.Route:CreateToggle("r_light",   { Title="Lightweight visuals", Default=true })
 local R_maxDots = Tabs.Route:CreateSlider("r_maxdots", { Title="Max dots on screen", Min=50, Max=800, Rounding=0, Default=300 })
 
--- НОВОЕ: параметры плавного подъёма
 local R_liftY   = Tabs.Route:CreateSlider("r_lifty",   { Title="Base lift above path (studs)", Min=0, Max=12, Rounding=1, Default=1.5 })
 local R_yGain   = Tabs.Route:CreateSlider("r_ygain",   { Title="Vertical gain (responsiveness)", Min=0.5, Max=8, Rounding=1, Default=2.6 })
 local R_yMax    = Tabs.Route:CreateSlider("r_ymax",    { Title="Max vertical speed", Min=2, Max=25, Rounding=0, Default=10 })
@@ -669,7 +603,7 @@ local function ensureRouteBV()
     local bv=getRouteBV()
     if not bv then
         bv=Instance.new("BodyVelocity"); bv.Name=ROUTE_BV_NAME
-        bv.MaxForce = Vector3.new(1e9, 1e5, 1e9) -- умеренная сила по Y
+        bv.MaxForce = Vector3.new(1e9, 1e5, 1e9)
         bv.Velocity = Vector3.new()
         bv.Parent   = root
     end
@@ -729,7 +663,6 @@ function _ROUTE_startRecord()
         if not Route.recording then return end
         local cur = root.Position
 
-        -- idle -> WAIT
         local vel    = root.AssemblyLinearVelocity or Vector3.zero
         local planar = Vector3.new(vel.X,0,vel.Z).Magnitude
         local moving = hum.MoveDirection.Magnitude > 0.10
@@ -804,19 +737,16 @@ local function followSeg(p1, p2)
         if not (root and root.Parent) then ensureChar(); if not (root and root.Parent) then break end end
         local cur = root.Position
 
-        -- Планарное ведение по XZ
         local planar = Vector3.new(p2.X - cur.X, 0, p2.Z - cur.Z)
         local d = planar.Magnitude
         local vPlan = (d>0 and planar.Unit or Vector3.new())*speed
 
-        -- Плавная вертикаль: цель = высота точки + базовый лифт
         local wantY   = p2.Y + ((R_liftY and R_liftY.Value) or 0)
         local err     = wantY - cur.Y
         local targetV = math.clamp(err * ((R_yGain and R_yGain.Value) or 2.6),
                                    -((R_yMax and R_yMax.Value) or 10),
                                    ((R_yMax and R_yMax.Value) or 10))
 
-        -- сглаживаем (инерция), 0 — без сглаживания, ближе к 1 — плавнее
         local damp    = (R_yDamp and R_yDamp.Value) or 0.55
         Route._vy     = Route._vy or 0
         Route._vy     = Route._vy + (targetV - Route._vy) * (1 - damp)
@@ -886,7 +816,6 @@ Tabs.Route:CreateButton({
 R_loop:OnChanged(redrawLines)
 R_click:OnChanged(function() startClickAdd(); ui(R_click.Value and "Click-to-add: ON" or "Click-to-add: OFF") end)
 startClickAdd()
-
 
 -- ========= [ TAB: Auto Loot ] =========
 Tabs.Loot = Window:AddTab({ Title = "Auto Loot", Icon = "package" })
@@ -1044,7 +973,7 @@ local NAME_HINTS = {
     "stone","node","ore","iron","gold","emerald","magnetite","adurite","crystal",
     "ice","cave","shelly","chest","hut","house","raft","boat"
 }
-local function isBoogaEnvPart(p) -- BasePart
+local function isBoogaEnvPart(p)
     if not p or not p.Parent or not p.CanCollide then return false end
     if p:IsDescendantOf(plr.Character) then return false end
     if p.Parent:FindFirstChildOfClass("Humanoid") then return false end
@@ -1058,8 +987,8 @@ local function isBoogaEnvPart(p) -- BasePart
     return okMat
 end
 
-local activeNCC = {}  -- [envPart] = { [charPart] = NCC }
-local function addNoCollide(envPart) -- BasePart
+local activeNCC = {}
+local function addNoCollide(envPart)
     if not envPart or not envPart.Parent then return end
     local perChar = activeNCC[envPart]; if not perChar then perChar = {}; activeNCC[envPart] = perChar end
     for _,cp in ipairs(getCharParts()) do
@@ -1071,7 +1000,7 @@ local function addNoCollide(envPart) -- BasePart
         end
     end
 end
-local function removeNoCollideFor(envPart) -- BasePart
+local function removeNoCollideFor(envPart)
     local perChar = activeNCC[envPart]
     if perChar then for _,ncc in pairs(perChar) do if ncc then ncc:Destroy() end end; activeNCC[envPart] = nil end
 end
@@ -1108,33 +1037,27 @@ task.spawn(function()
     end
 end)
 
-
-
 -- ========= [ TAB: Movement (Slope / Auto Climb + 360°) ] =========
 local UIS2 = game:GetService("UserInputService")
 local LRun = game:GetService("RunService")
 
 local MoveTab = Window:AddTab({ Title = "Movement", Icon = "mountain" })
 
--- базовые настройки
 local mv_on        = MoveTab:CreateToggle("mv_on",        { Title = "Slope / Auto Climb (BV)", Default = false })
 local mv_speed     = MoveTab:CreateSlider("mv_speed",     { Title = "Speed", Min = 8, Max = 40, Rounding = 1, Default = 20 })
 local mv_boost     = MoveTab:CreateToggle("mv_boost",     { Title = "Shift = Boost (+40%)", Default = true })
 local mv_jumphelp  = MoveTab:CreateToggle("mv_jumphelp",  { Title = "Auto Jump on slopes", Default = true })
 local mv_sidestep  = MoveTab:CreateToggle("mv_sidestep",  { Title = "Side step if blocked", Default = true })
 
--- зонды/анти-застревание
 local mv_probeLen  = MoveTab:CreateSlider("mv_probel",    { Title = "Wall probe length", Min = 4, Max = 12, Rounding = 1, Default = 7 })
 local mv_probeH    = MoveTab:CreateSlider("mv_probeh",    { Title = "Probe height", Min = 1.5, Max = 4, Rounding = 1, Default = 2.4 })
 local mv_stuckT    = MoveTab:CreateSlider("mv_stuck",     { Title = "Anti-stuck time (s)", Min = 0.2, Max = 1.2, Rounding = 2, Default = 0.6 })
 local mv_sideStep  = MoveTab:CreateSlider("mv_sidest",    { Title = "Side step power", Min = 2, Max = 7, Rounding = 1, Default = 4.2 })
 
--- новый режим: 360° подъём (можно спиной/боком)
 local mv_360       = MoveTab:CreateToggle("mv_360",       { Title = "360° climb (спиной/боком тоже)", Default = true })
 local mv_360_fov   = MoveTab:CreateSlider("mv_360_fov",   { Title = "Конус (°) вокруг движения", Min = 30, Max = 360, Rounding = 0, Default = 300 })
 local mv_360_rays  = MoveTab:CreateSlider("mv_360_rays",  { Title = "Кол-во лучей", Min = 4, Max = 24, Rounding = 0, Default = 12 })
 
--- утилиты BV
 local function getRoot()
     if not root or not root.Parent then
         local c = plr.Character
@@ -1152,7 +1075,7 @@ local function mv_ensureBV()
     if not bv then
         bv = Instance.new("BodyVelocity")
         bv.Name = "_MV_BV"
-        bv.MaxForce = Vector3.new(1e9, 0, 1e9) -- движемся по XZ, прыжку не мешаем
+        bv.MaxForce = Vector3.new(1e9, 0, 1e9)
         bv.Velocity = Vector3.new()
         bv.Parent = rp
     end
@@ -1162,7 +1085,6 @@ local function mv_killBV()
     local bv = mv_getBV(); if bv then bv:Destroy() end
 end
 
--- рейкасты
 local rayParams_mv = RaycastParams.new()
 rayParams_mv.FilterType = Enum.RaycastFilterType.Exclude
 rayParams_mv.FilterDescendantsInstances = { plr.Character }
@@ -1174,7 +1096,6 @@ local function wallAheadXZ(dir2d)
     local dir3 = Vector3.new(dir2d.X, 0, dir2d.Z).Unit * mv_probeLen.Value
     local hit = workspace:Raycast(origin, dir3, rayParams_mv)
     if not hit then return false end
-    -- вертикальная/крутая поверхность
     return (hit.Normal.Y or 0) < 0.6
 end
 
@@ -1188,7 +1109,7 @@ local function blocked360(dir2d)
     local rays = math.max(4, math.floor(mv_360_rays.Value))
     local span = math.clamp(mv_360_fov.Value, 30, 360)
     if dir2d.Magnitude < 1e-3 then
-        dir2d = Vector3.new(0,0,1) -- базовый вектор, если стоим
+        dir2d = Vector3.new(0,0,1)
         span = 360
     end
     local start = -span/2
@@ -1229,7 +1150,6 @@ local function trySideStep(dir2d)
     bv.Velocity = Vector3.new()
 end
 
--- основной цикл
 task.spawn(function()
     local lastMoveT = tick()
     while true do
@@ -1241,7 +1161,6 @@ task.spawn(function()
                 speed = speed * 1.4
             end
 
-            -- 360-сканирование препятствий (подъём спиной/боком)
             if mv_360.Value then
                 local scanDir = moving and dir or Vector3.new(0,0,1)
                 if blocked360(scanDir) then
@@ -1255,7 +1174,6 @@ task.spawn(function()
                 end
             end
 
-            -- движение
             local bv = mv_ensureBV()
             if moving then
                 bv.Velocity = dir.Unit * speed
@@ -1264,7 +1182,6 @@ task.spawn(function()
                 bv.Velocity = Vector3.new()
             end
 
-            -- анти-застревание
             if tick() - lastMoveT > mv_stuckT.Value then
                 local d2 = hum.MoveDirection
                 if d2.Magnitude > 0.05 then trySideStep(d2.Unit) end
@@ -1286,7 +1203,6 @@ plr.CharacterAdded:Connect(function()
     end)
 end)
 mv_on:OnChanged(function(v) if not v then mv_killBV() end end)
-
 
 -- =========================
 -- TAB: Follow (следовать за игроком)
@@ -1317,7 +1233,7 @@ local function FLW_ensureBV()
     local bv = FLW_getBV()
     if not bv then
         bv = Instance.new("BodyVelocity"); bv.Name="_FLW_BV"
-        bv.MaxForce = Vector3.new(1e9, 0, 1e9) -- XZ only
+        bv.MaxForce = Vector3.new(1e9, 0, 1e9)
         bv.Velocity = Vector3.new(); bv.Parent = root
     end
     return bv
@@ -1364,7 +1280,7 @@ task.spawn(function()
     end
 end)
 
--- ========= [ TAB: ESP — Wandering Trader (event + resilient) ] =========
+-- ========= [ TAB: ESP — Wandering Trader ] =========
 local TraderTab = Window:AddTab({ Title = "Trader ESP", Icon = "store" })
 
 local tr_enable    = TraderTab:CreateToggle("tr_esp_enable", { Title = "Enable Trader ESP", Default = true })
@@ -1373,7 +1289,6 @@ local tr_highlight = TraderTab:CreateToggle("tr_highlight",  { Title = "Highligh
 local tr_maxdist   = TraderTab:CreateSlider ("tr_maxdist",   { Title = "Max distance (studs)", Min=100, Max=5000, Rounding=0, Default=2000 })
 local tr_notify    = TraderTab:CreateToggle("tr_notify",     { Title = "Notify on spawn/despawn", Default = true })
 
--- hints
 local TRADER_NAME_HINTS = { "wandering trader","wanderingtrader","trader","wanderer" }
 local function textMatch(s, arr)
     s = string.lower(tostring(s or ""))
@@ -1388,14 +1303,12 @@ local function isTraderModel(m)
         if textMatch(m:GetAttribute("Name"),        TRADER_NAME_HINTS) then return true end
         if textMatch(m:GetAttribute("NPCType"),     TRADER_NAME_HINTS) then return true end
     end
-    -- иногда имя на дочерних объектах
     for _,ch in ipairs(m:GetChildren()) do
         if textMatch(ch.Name, TRADER_NAME_HINTS) then return true end
     end
     return false
 end
 
--- utils
 local function modelRoot(m)
     return m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
 end
@@ -1405,7 +1318,6 @@ local function prettyName(m)
     return (dn and dn~="") and tostring(dn) or "Wandering Trader"
 end
 
--- visuals
 local function makeBillboard(adornee)
     local bb = Instance.new("BillboardGui")
     bb.Name = "_ESP_TRADER_BB"; bb.AlwaysOnTop = true
@@ -1432,7 +1344,6 @@ local function ensureHL(model)
     return hl
 end
 
--- state
 local TR = { map = {}, loop = nil, addConn=nil, remConn=nil }
 
 local function attachTrader(m)
@@ -1440,7 +1351,6 @@ local function attachTrader(m)
     local r = modelRoot(m)
     local bb, tl, hl
 
-    -- если пока нет корневой детали — дождёмся
     if not r then
         local tmpConn
         tmpConn = m.ChildAdded:Connect(function(ch)
@@ -1451,7 +1361,6 @@ local function attachTrader(m)
                 end
             end
         end)
-        -- создадим запись, билборд появится как только найдётся корень
         TR.map[m] = { model=m, root=nil, bb=nil, tl=nil, hl=nil, label=prettyName(m), waitConn=tmpConn, lastTxt="" }
     end
 
@@ -1480,12 +1389,10 @@ end
 local function startTraderESP()
     if TR.loop then return end
 
-    -- первичный один-раз скан (легко, но полно)
     for _,inst in ipairs(workspace:GetDescendants()) do
         if inst:IsA("Model") and isTraderModel(inst) then attachTrader(inst) end
     end
 
-    -- глобальные вотчеры: ничего не пропустим
     TR.addConn = workspace.DescendantAdded:Connect(function(inst)
         if inst:IsA("Model") and isTraderModel(inst) then attachTrader(inst) end
     end)
@@ -1493,7 +1400,6 @@ local function startTraderESP()
         if TR.map[inst] then detachTrader(inst) end
     end)
 
-    -- лёгкий апдейт раз в 0.2с
     local acc = 0
     TR.loop = RunService.Heartbeat:Connect(function(dt)
         acc = acc + (dt or 0)
@@ -1510,7 +1416,6 @@ local function startTraderESP()
             if not (rec.model and rec.model.Parent) then
                 detachTrader(m)
             else
-                -- если root появился позже — создадим визуал сейчас
                 if not rec.root then
                     local nr = modelRoot(rec.model)
                     if nr then
@@ -1520,7 +1425,6 @@ local function startTraderESP()
                     end
                 end
                 if rec.root then
-                    -- дистанция/видимость
                     local inRange, txt = true, rec.label
                     if myRoot then
                         local d = (rec.root.Position - myRoot.Position).Magnitude
@@ -1545,9 +1449,6 @@ end
 
 tr_enable:OnChanged(function(v) if v then startTraderESP() else stopTraderESP() end end)
 if tr_enable.Value then startTraderESP() end
-
-
-
 
 -- ========= [ Finish / Autoload ] =========
 Window:SelectTab(1)
