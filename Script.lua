@@ -22,27 +22,6 @@ local function ensureChar()
 end
 plr.CharacterAdded:Connect(function() task.defer(ensureChar) end)
 
--- универсальный безопасный GET (работает и на ПК, и на телефоне-эмуляторе)
-local function safeHttpGet(url)
-    local ok, res
-    -- попытка через game (Roblox Http)
-    ok, res = pcall(function()
-        if game.HttpGet then return game:HttpGet(url) end
-        if game.HttpGetAsync then return game:HttpGetAsync(url) end
-        return nil
-    end)
-    if ok and type(res) == "string" and #res > 0 then return res end
-    -- попытка через эксплойт-апи
-    local req = (syn and syn.request) or (http and http.request) or http_request or request
-    if req then
-        local r = req({Url = url, Method = "GET"})
-        if r and r.Success ~= false and r.StatusCode and r.StatusCode < 400 then
-            return r.Body
-        end
-    end
-    return nil
-end
-
 -- ========= [ Packets (без ошибок, если модуля нет) ] =========
 local packets do
     local ok, mod = pcall(function() return require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("Packets")) end)
@@ -85,8 +64,6 @@ local function sanitize(name)
     name = tostring(name or ""):gsub("[%c\\/:*?\"<>|]+",""):gsub("^%s+",""):gsub("%s+$","")
     return name == "" and "default" or name
 end
-
-local function notify(t, c, d) pcall(function() Library:Notify{ Title=t, Content=c, Duration=d or 3 } end) end
 
 -- === [ RouteLock: общий замок для Route/Follow — убирает чужие силы ] ===
 _G.__ROUTE_LOCK = _G.__ROUTE_LOCK or {count = 0, active = false}
@@ -246,7 +223,7 @@ auto:OnChanged(function(v)
     else pcall(function() SaveManager:DeleteAutoloadConfig() end) end
 end)
 
--- === [ переносимый экспорт/импорт ROUTE (строка/буфер) ] ===
+-- === [ переносимый экспорт/импорт ROUTE ] ===
 do
     local function Route_ToString()
         local arr = encodeRoute((_G.__ROUTE and _G.__ROUTE.points) or {})
@@ -313,72 +290,6 @@ do
             else
                 Library:Notify{ Title="Route", Content="Import failed: "..tostring(err), Duration=4 }
             end
-        end
-    })
-
-    -- === [ НОВОЕ: УДАЛЁННАЯ СИНХРОНИЗАЦИЯ ЧЕРЕЗ URL ] ===
-    local remoteURL = ""
-    local urlInput = Tabs.Configs:AddInput("route_remote_url", {
-        Title = "Remote Route URL (raw JSON)",
-        Default = "",
-        Placeholder = "https://pastebin.com/raw/XXXX  |  https://raw.githubusercontent.com/.../route.json"
-    })
-    urlInput:OnChanged(function(v) remoteURL = tostring(v or "") end)
-
-    local urlAutoload = Tabs.Configs:CreateToggle("route_url_autoload", {
-        Title = "Autoload Route from URL on start",
-        Default = false
-    })
-
-    local function ImportRouteFromString(str)
-        local ok, t = pcall(function() return HttpService:JSONDecode(str) end)
-        if not ok then return false, "bad json" end
-        if not _G.__ROUTE then return false, "no route obj" end
-        local points = decodeRoute(t)
-        table.clear(_G.__ROUTE.points)
-        if _G.__ROUTE._redraw and _G.__ROUTE._redraw.clearDots then _G.__ROUTE._redraw.clearDots() end
-        for _,p in ipairs(points) do
-            table.insert(_G.__ROUTE.points, p)
-            if _G.__ROUTE._redraw and _G.__ROUTE._redraw.dot then
-                _G.__ROUTE._redraw.dot(Color3.fromRGB(255,230,80), p.pos, 0.7)
-            end
-        end
-        if _G.__ROUTE._redraw and _G.__ROUTE._redraw.redrawLines then
-            _G.__ROUTE._redraw.redrawLines()
-        end
-        return true
-    end
-
-    local function LoadRouteFromURL(url)
-        url = tostring(url or "")
-        if url == "" then return false, "empty url" end
-        local body = safeHttpGet(url)
-        if not body or body == "" then return false, "http get failed" end
-        local ok, err = ImportRouteFromString(body)
-        if not ok then return false, err end
-        pcall(function() Route_SaveToFile(ROUTE_AUTOSAVE, _G.__ROUTE.points) end)
-        return true
-    end
-
-    Tabs.Configs:CreateButton({
-        Title = "Load route from URL (replace current)",
-        Callback = function()
-            local ok, err = LoadRouteFromURL(remoteURL)
-            if ok then
-                notify("Route", "Loaded from URL", 3)
-            else
-                notify("Route", "URL load failed: "..tostring(err), 4)
-            end
-        end
-    })
-
-    -- удобная кнопка скопировать текущий маршрут в F9 (для ручной вставки на pastebin)
-    Tabs.Configs:CreateButton({
-        Title = "Print CURRENT route (for paste sites)",
-        Callback = function()
-            local s = Route_ToString()
-            print("[ROUTE JSON BEGIN]\n"..s.."\n[ROUTE JSON END]")
-            notify("Route", "JSON напечатан в F9 (Console)", 3)
         end
     })
 end
@@ -483,7 +394,9 @@ do
         end
     end
 
-    -- КЕШ
+    ----------------------------------------------------------------
+    -- КЕШ: следим за папками и держим лёгкий список
+    ----------------------------------------------------------------
     local cache = {}  -- [instance] = {eid=<number>, getPos=<fn>, name=<string>}
     local watched, conns = {}, {}
 
@@ -533,7 +446,9 @@ do
         refreshFolders()
     end)
 
-    -- Селектор
+    ----------------------------------------------------------------
+    -- Селектор целей
+    ----------------------------------------------------------------
     local selSet, useBlack = nil, false
     local function compileSelector()
         local val = br_list.Value
@@ -546,13 +461,16 @@ do
     br_list:OnChanged(compileSelector)
     br_black:OnChanged(function(v) useBlack = v end)
 
+    ----------------------------------------------------------------
     -- Раннер
+    ----------------------------------------------------------------
     task.spawn(function()
         while true do
             if br_auto.Value and root and root.Parent then
                 local range   = br_range.Value
                 local maxHit  = br_max.Value
 
+                -- Собираем и частично ограничиваем кандидатов
                 local candidates = {}
                 local myPos = root.Position
                 for inst, info in pairs(cache) do
@@ -580,15 +498,18 @@ do
                     table.sort(candidates, function(a,b) return a.dist < b.dist end)
                 end
 
+                -- первичный пакет целей
                 local ids = {}
                 for i = 1, math.min(maxHit, #candidates) do
                     ids[#ids+1] = candidates[i].eid
                 end
 
+                -- мульти-удар за тик
                 local swings = math.max(1, math.floor(br_swings.Value))
                 if #ids > 0 then
                     for s = 1, swings do
                         if br_retarget.Value and s > 1 then
+                            -- быстрый ретаргет: обновим дистанции и пересоберём ids
                             myPos = root.Position
                             for j = 1, #candidates do
                                 local c = candidates[j]
@@ -617,6 +538,7 @@ do
         end
     end)
 end
+
 
 -- ========= [ TAB: Route (плавный подъём по Y как в Movement, без автопрыжка) ] =========
 Tabs.Route = Window:AddTab({ Title = "Route", Icon = "route" })
@@ -698,7 +620,7 @@ local function ensureRouteBV()
     local bv=getRouteBV()
     if not bv then
         bv=Instance.new("BodyVelocity"); bv.Name=ROUTE_BV_NAME
-        bv.MaxForce = Vector3.new(1e9, 1e5, 1e9)
+        bv.MaxForce = Vector3.new(1e9, 1e5, 1e9) -- умеренная сила по Y
         bv.Velocity = Vector3.new()
         bv.Parent   = root
     end
@@ -838,13 +760,14 @@ local function followSeg(p1, p2)
         local d = planar.Magnitude
         local vPlan = (d>0 and planar.Unit or Vector3.new())*speed
 
-        -- Плавная вертикаль
+        -- Плавная вертикаль: цель = высота точки + базовый лифт
         local wantY   = p2.Y + ((R_liftY and R_liftY.Value) or 0)
         local err     = wantY - cur.Y
         local targetV = math.clamp(err * ((R_yGain and R_yGain.Value) or 2.6),
                                    -((R_yMax and R_yMax.Value) or 10),
                                    ((R_yMax and R_yMax.Value) or 10))
 
+        -- сглаживаем (инерция), 0 — без сглаживания, ближе к 1 — плавнее
         local damp    = (R_yDamp and R_yDamp.Value) or 0.55
         Route._vy     = Route._vy or 0
         Route._vy     = Route._vy + (targetV - Route._vy) * (1 - damp)
@@ -914,6 +837,7 @@ Tabs.Route:CreateButton({
 R_loop:OnChanged(redrawLines)
 R_click:OnChanged(function() startClickAdd(); ui(R_click.Value and "Click-to-add: ON" or "Click-to-add: OFF") end)
 startClickAdd()
+
 
 -- ========= [ TAB: Auto Loot ] =========
 Tabs.Loot = Window:AddTab({ Title = "Auto Loot", Icon = "package" })
@@ -1135,27 +1059,33 @@ task.spawn(function()
     end
 end)
 
+
+
 -- ========= [ TAB: Movement (Slope / Auto Climb + 360°) ] =========
 local UIS2 = game:GetService("UserInputService")
 local LRun = game:GetService("RunService")
 
 local MoveTab = Window:AddTab({ Title = "Movement", Icon = "mountain" })
 
+-- базовые настройки
 local mv_on        = MoveTab:CreateToggle("mv_on",        { Title = "Slope / Auto Climb (BV)", Default = false })
 local mv_speed     = MoveTab:CreateSlider("mv_speed",     { Title = "Speed", Min = 8, Max = 40, Rounding = 1, Default = 20 })
 local mv_boost     = MoveTab:CreateToggle("mv_boost",     { Title = "Shift = Boost (+40%)", Default = true })
 local mv_jumphelp  = MoveTab:CreateToggle("mv_jumphelp",  { Title = "Auto Jump on slopes", Default = true })
 local mv_sidestep  = MoveTab:CreateToggle("mv_sidestep",  { Title = "Side step if blocked", Default = true })
 
+-- зонды/анти-застревание
 local mv_probeLen  = MoveTab:CreateSlider("mv_probel",    { Title = "Wall probe length", Min = 4, Max = 12, Rounding = 1, Default = 7 })
 local mv_probeH    = MoveTab:CreateSlider("mv_probeh",    { Title = "Probe height", Min = 1.5, Max = 4, Rounding = 1, Default = 2.4 })
 local mv_stuckT    = MoveTab:CreateSlider("mv_stuck",     { Title = "Anti-stuck time (s)", Min = 0.2, Max = 1.2, Rounding = 2, Default = 0.6 })
 local mv_sideStep  = MoveTab:CreateSlider("mv_sidest",    { Title = "Side step power", Min = 2, Max = 7, Rounding = 1, Default = 4.2 })
 
+-- новый режим: 360° подъём (можно спиной/боком)
 local mv_360       = MoveTab:CreateToggle("mv_360",       { Title = "360° climb (спиной/боком тоже)", Default = true })
 local mv_360_fov   = MoveTab:CreateSlider("mv_360_fov",   { Title = "Конус (°) вокруг движения", Min = 30, Max = 360, Rounding = 0, Default = 300 })
 local mv_360_rays  = MoveTab:CreateSlider("mv_360_rays",  { Title = "Кол-во лучей", Min = 4, Max = 24, Rounding = 0, Default = 12 })
 
+-- утилиты BV
 local function getRoot()
     if not root or not root.Parent then
         local c = plr.Character
@@ -1173,7 +1103,7 @@ local function mv_ensureBV()
     if not bv then
         bv = Instance.new("BodyVelocity")
         bv.Name = "_MV_BV"
-        bv.MaxForce = Vector3.new(1e9, 0, 1e9)
+        bv.MaxForce = Vector3.new(1e9, 0, 1e9) -- движемся по XZ, прыжку не мешаем
         bv.Velocity = Vector3.new()
         bv.Parent = rp
     end
@@ -1183,6 +1113,7 @@ local function mv_killBV()
     local bv = mv_getBV(); if bv then bv:Destroy() end
 end
 
+-- рейкасты
 local rayParams_mv = RaycastParams.new()
 rayParams_mv.FilterType = Enum.RaycastFilterType.Exclude
 rayParams_mv.FilterDescendantsInstances = { plr.Character }
@@ -1194,6 +1125,7 @@ local function wallAheadXZ(dir2d)
     local dir3 = Vector3.new(dir2d.X, 0, dir2d.Z).Unit * mv_probeLen.Value
     local hit = workspace:Raycast(origin, dir3, rayParams_mv)
     if not hit then return false end
+    -- вертикальная/крутая поверхность
     return (hit.Normal.Y or 0) < 0.6
 end
 
@@ -1207,7 +1139,7 @@ local function blocked360(dir2d)
     local rays = math.max(4, math.floor(mv_360_rays.Value))
     local span = math.clamp(mv_360_fov.Value, 30, 360)
     if dir2d.Magnitude < 1e-3 then
-        dir2d = Vector3.new(0,0,1)
+        dir2d = Vector3.new(0,0,1) -- базовый вектор, если стоим
         span = 360
     end
     local start = -span/2
@@ -1248,6 +1180,7 @@ local function trySideStep(dir2d)
     bv.Velocity = Vector3.new()
 end
 
+-- основной цикл
 task.spawn(function()
     local lastMoveT = tick()
     while true do
@@ -1259,6 +1192,7 @@ task.spawn(function()
                 speed = speed * 1.4
             end
 
+            -- 360-сканирование препятствий (подъём спиной/боком)
             if mv_360.Value then
                 local scanDir = moving and dir or Vector3.new(0,0,1)
                 if blocked360(scanDir) then
@@ -1272,6 +1206,7 @@ task.spawn(function()
                 end
             end
 
+            -- движение
             local bv = mv_ensureBV()
             if moving then
                 bv.Velocity = dir.Unit * speed
@@ -1280,6 +1215,7 @@ task.spawn(function()
                 bv.Velocity = Vector3.new()
             end
 
+            -- анти-застревание
             if tick() - lastMoveT > mv_stuckT.Value then
                 local d2 = hum.MoveDirection
                 if d2.Magnitude > 0.05 then trySideStep(d2.Unit) end
@@ -1301,6 +1237,7 @@ plr.CharacterAdded:Connect(function()
     end)
 end)
 mv_on:OnChanged(function(v) if not v then mv_killBV() end end)
+
 
 -- =========================
 -- TAB: Follow (следовать за игроком)
@@ -1331,7 +1268,7 @@ local function FLW_ensureBV()
     local bv = FLW_getBV()
     if not bv then
         bv = Instance.new("BodyVelocity"); bv.Name="_FLW_BV"
-        bv.MaxForce = Vector3.new(1e9, 0, 1e9)
+        bv.MaxForce = Vector3.new(1e9, 0, 1e9) -- XZ only
         bv.Velocity = Vector3.new(); bv.Parent = root
     end
     return bv
@@ -1387,6 +1324,7 @@ local tr_highlight = TraderTab:CreateToggle("tr_highlight",  { Title = "Highligh
 local tr_maxdist   = TraderTab:CreateSlider ("tr_maxdist",   { Title = "Max distance (studs)", Min=100, Max=5000, Rounding=0, Default=2000 })
 local tr_notify    = TraderTab:CreateToggle("tr_notify",     { Title = "Notify on spawn/despawn", Default = true })
 
+-- hints
 local TRADER_NAME_HINTS = { "wandering trader","wanderingtrader","trader","wanderer" }
 local function textMatch(s, arr)
     s = string.lower(tostring(s or ""))
@@ -1401,12 +1339,14 @@ local function isTraderModel(m)
         if textMatch(m:GetAttribute("Name"),        TRADER_NAME_HINTS) then return true end
         if textMatch(m:GetAttribute("NPCType"),     TRADER_NAME_HINTS) then return true end
     end
+    -- иногда имя на дочерних объектах
     for _,ch in ipairs(m:GetChildren()) do
         if textMatch(ch.Name, TRADER_NAME_HINTS) then return true end
     end
     return false
 end
 
+-- utils
 local function modelRoot(m)
     return m:FindFirstChild("HumanoidRootPart") or m.PrimaryPart or m:FindFirstChildWhichIsA("BasePart")
 end
@@ -1416,6 +1356,7 @@ local function prettyName(m)
     return (dn and dn~="") and tostring(dn) or "Wandering Trader"
 end
 
+-- visuals
 local function makeBillboard(adornee)
     local bb = Instance.new("BillboardGui")
     bb.Name = "_ESP_TRADER_BB"; bb.AlwaysOnTop = true
@@ -1442,6 +1383,7 @@ local function ensureHL(model)
     return hl
 end
 
+-- state
 local TR = { map = {}, loop = nil, addConn=nil, remConn=nil }
 
 local function attachTrader(m)
@@ -1449,6 +1391,7 @@ local function attachTrader(m)
     local r = modelRoot(m)
     local bb, tl, hl
 
+    -- если пока нет корневой детали — дождёмся
     if not r then
         local tmpConn
         tmpConn = m.ChildAdded:Connect(function(ch)
@@ -1459,6 +1402,7 @@ local function attachTrader(m)
                 end
             end
         end)
+        -- создадим запись, билборд появится как только найдётся корень
         TR.map[m] = { model=m, root=nil, bb=nil, tl=nil, hl=nil, label=prettyName(m), waitConn=tmpConn, lastTxt="" }
     end
 
@@ -1487,10 +1431,12 @@ end
 local function startTraderESP()
     if TR.loop then return end
 
+    -- первичный один-раз скан (легко, но полно)
     for _,inst in ipairs(workspace:GetDescendants()) do
         if inst:IsA("Model") and isTraderModel(inst) then attachTrader(inst) end
     end
 
+    -- глобальные вотчеры: ничего не пропустим
     TR.addConn = workspace.DescendantAdded:Connect(function(inst)
         if inst:IsA("Model") and isTraderModel(inst) then attachTrader(inst) end
     end)
@@ -1498,6 +1444,7 @@ local function startTraderESP()
         if TR.map[inst] then detachTrader(inst) end
     end)
 
+    -- лёгкий апдейт раз в 0.2с
     local acc = 0
     TR.loop = RunService.Heartbeat:Connect(function(dt)
         acc = acc + (dt or 0)
@@ -1514,6 +1461,7 @@ local function startTraderESP()
             if not (rec.model and rec.model.Parent) then
                 detachTrader(m)
             else
+                -- если root появился позже — создадим визуал сейчас
                 if not rec.root then
                     local nr = modelRoot(rec.model)
                     if nr then
@@ -1523,6 +1471,7 @@ local function startTraderESP()
                     end
                 end
                 if rec.root then
+                    -- дистанция/видимость
                     local inRange, txt = true, rec.label
                     if myRoot then
                         local d = (rec.root.Position - myRoot.Position).Magnitude
@@ -1548,56 +1497,14 @@ end
 tr_enable:OnChanged(function(v) if v then startTraderESP() else stopTraderESP() end end)
 if tr_enable.Value then startTraderESP() end
 
+
+
+
 -- ========= [ Finish / Autoload ] =========
 Window:SelectTab(1)
 Library:Notify{ Title="Fuger Hub", Content="Loaded: Configs + Survival + Gold + Route + Farming + Heal + Combat", Duration=6 }
-
--- сначала загружаем автоконфиг
 pcall(function() SaveManager:LoadAutoloadConfig() end)
-
--- если включён автозапуск из URL — пробуем сперва его, иначе fallback на autosave файл
-local function tryAutoloadRemote()
-    local urlToggle = Library and Library.Flags and Library.Flags.route_url_autoload
-    local urlBox    = Library and Library.Flags and Library.Flags.route_remote_url
-    local enabled   = urlToggle and urlToggle.Value
-    local url       = urlBox and tostring(urlBox.Value or "") or ""
-    if enabled and url ~= "" then
-        local ok, err = pcall(function()
-            local body = safeHttpGet(url)
-            if not body or body == "" then error("http get failed") end
-            local okImp, why = pcall(function()
-                local t = HttpService:JSONDecode(body)
-                local pts = decodeRoute(t)
-                table.clear(_G.__ROUTE.points)
-                if _G.__ROUTE._redraw and _G.__ROUTE._redraw.clearDots then _G.__ROUTE._redraw.clearDots() end
-                for _,p in ipairs(pts) do
-                    table.insert(_G.__ROUTE.points, p)
-                    if _G.__ROUTE._redraw and _G.__ROUTE._redraw.dot then
-                        _G.__ROUTE._redraw.dot(Color3.fromRGB(255,230,80), p.pos, 0.7)
-                    end
-                end
-                if _G.__ROUTE._redraw and _G.__ROUTE._redraw.redrawLines then
-                    _G.__ROUTE._redraw.redrawLines()
-                end
-            end)
-            if not okImp then error(why or "import failed") end
-        end)
-        if ok then
-            notify("Route", "Autoloaded route from URL", 3)
-            pcall(function() Route_SaveToFile(ROUTE_AUTOSAVE, _G.__ROUTE.points) end)
-            return true
-        else
-            notify("Route", "URL autoload failed — using autosave", 3)
-        end
-    end
-    return false
-end
-
-local usedRemote = false
-pcall(function() usedRemote = tryAutoloadRemote() end)
-if not usedRemote then
-    pcall(function()
-        local ok = Route_LoadFromFile(ROUTE_AUTOSAVE, _G.__ROUTE, _G.__ROUTE._redraw)
-        if ok then Library:Notify{ Title="Route", Content="Route autosave loaded", Duration=3 } end
-    end)
-end
+pcall(function()
+    local ok = Route_LoadFromFile(ROUTE_AUTOSAVE, _G.__ROUTE, _G.__ROUTE._redraw)
+    if ok then Library:Notify{ Title="Route", Content="Route autosave loaded", Duration=3 } end
+end)
